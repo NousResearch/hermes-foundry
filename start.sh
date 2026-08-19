@@ -15,7 +15,7 @@
 # Bind the edge before slow initialization so the platform readiness window is respected.
 set -uo pipefail
 
-log() { echo "[hermes-foundry] $*"; }
+log() { echo "[full-foundry] $*"; }
 
 : "${MODEL_DEPLOYMENT_NAME:?MODEL_DEPLOYMENT_NAME is required}"
 : "${FALLBACK_MODEL_DEPLOYMENT_NAME:?FALLBACK_MODEL_DEPLOYMENT_NAME is required}"

@@ -33,5 +33,5 @@ cp "$SRC/gateway/app.py" gateway/
 cp "$SRC/sidecar/agent365_mcp.py" sidecar/
 
 echo "==> building in ACR (tag $TAG)"
-az acr build --registry "$REG" --image "hermes-foundry:$TAG" --file Dockerfile .
-echo "==> done: $REG.azurecr.io/hermes-foundry:$TAG"
+az acr build --registry "$REG" --image "hermes-full-foundry:$TAG" --file Dockerfile .
+echo "==> done: $REG.azurecr.io/hermes-full-foundry:$TAG"

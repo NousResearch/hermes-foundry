@@ -139,12 +139,12 @@ def _ship(message: str, level: int = 1):
                 "name": "Microsoft.ApplicationInsights.Message",
                 "time": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
                 "iKey": _AI_IKEY,
-                "tags": {"ai.cloud.role": "hermes-foundry-gateway",
-                         "ai.cloud.roleInstance": os.environ.get("HOSTNAME", "hermes-foundry")},
+                "tags": {"ai.cloud.role": "hermes-full-foundry-gateway",
+                         "ai.cloud.roleInstance": os.environ.get("HOSTNAME", "full-foundry")},
                 "data": {"baseType": "MessageData",
                          "baseData": {"ver": 2, "message": message[:8000],
                                       "severityLevel": level,
-                                      "properties": {"source": "hermes-foundry-gateway"}}},
+                                      "properties": {"source": "hermes-full-foundry-gateway"}}},
             }).encode()
             req = urllib.request.Request(_AI_URL, data=body,
                                         headers={"Content-Type": "application/json"})
