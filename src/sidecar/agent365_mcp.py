@@ -49,6 +49,10 @@ mcp = FastMCP(
         "colleague would be; if a call returns 403 say so plainly rather than retrying. "
         "There is no sign-in step: the identity is always present. If a tool reports the "
         "credential is missing or expired, report that to the user as a system fault. "
+        "PEOPLE: when someone gives a colleague's name but not their email address, call "
+        "resolve_person. It searches the tenant directory. Never use me/contacts for this: that is "
+        "the agent's private Outlook address book and is not the organisation directory. If "
+        "resolve_person reports multiple matches, ask which person before sending or sharing. "
         "WEB RESEARCH: never answer a 'look it up' request from memory. If web_search returns a "
         "SOURCE LIST instead of an answer, that is a success, not a failure — Azure's copyright "
         "filter blocks composed answers for recipes, lyrics and article text. Read the most relevant "
@@ -329,6 +333,83 @@ def _me(path: str = "") -> str:
 def whoami() -> str:
     """Return this agent's own Microsoft 365 identity (UPN, display name, mailbox)."""
     return _graph("GET", _me("?$select=displayName,userPrincipalName,mail,id,jobTitle"))
+
+
+@mcp.tool()
+def resolve_person(query: str, top: int = 10) -> str:
+    """Resolve a colleague's name or email address through the TENANT USER DIRECTORY.
+
+    Use this before send_email, share_file, invite_to_event, or any other tool that requires an
+    email address when the user supplied only a person's name. This searches Microsoft Entra users;
+    it does NOT search `me/contacts` (the agent's private Outlook contacts, which is the wrong data
+    source and may return 403).
+
+    A single exact match returns an explicit email to use. Multiple plausible matches are reported
+    as ambiguous: ask the user which person they mean and do not send/share speculatively.
+    """
+    q = (query or "").strip()
+    if not q:
+        return "ERROR: give a colleague's name or email address to resolve."
+    top = max(1, min(int(top or 10), 25))
+
+    # OData string literals escape an apostrophe by doubling it. Encode the complete expression so
+    # spaces cannot produce an invalid urllib URL while retaining OData punctuation for readable
+    # diagnostics. Directory $filter with eq/startswith does not require the advanced-query
+    # ConsistencyLevel header that $search would require.
+    literal = q.replace("'", "''")
+    if "@" in q:
+        expression = f"mail eq '{literal}' or userPrincipalName eq '{literal}'"
+    else:
+        expression = (f"displayName eq '{literal}' or startswith(displayName,'{literal}') "
+                      f"or startswith(userPrincipalName,'{literal}')")
+    encoded = urllib.parse.quote(expression, safe="(),'@.")
+    raw = _graph(
+        "GET",
+        f"users?$filter={encoded}&$top={top}"
+        "&$select=id,displayName,mail,userPrincipalName,accountEnabled",
+    )
+    if raw.startswith("ERROR"):
+        return ("PERSON LOOKUP FAILED — no recipient was resolved and nothing should be sent or "
+                f"shared. Do not retry through me/contacts.\n{raw}")
+
+    try:
+        values = json.loads(raw).get("value") or []
+    except (json.JSONDecodeError, AttributeError) as e:
+        return ("PERSON LOOKUP FAILED — Graph returned an unreadable directory response; nothing "
+                f"should be sent or shared. {type(e).__name__}: {e}")
+
+    candidates = []
+    for user in values:
+        if user.get("accountEnabled") is False:
+            continue
+        email = (user.get("mail") or user.get("userPrincipalName") or "").strip()
+        if not email:
+            continue
+        candidates.append({
+            "name": (user.get("displayName") or "").strip() or "(no display name)",
+            "email": email,
+            "upn": (user.get("userPrincipalName") or "").strip(),
+            "id": (user.get("id") or "").strip(),
+        })
+
+    if not candidates:
+        return (f"NO DIRECTORY MATCH for {q!r}. Ask for the person's exact email address; do not "
+                "guess it and do not search me/contacts.")
+
+    qfold = q.casefold()
+    exact = [c for c in candidates if qfold in {
+        c["name"].casefold(), c["email"].casefold(), c["upn"].casefold()
+    }]
+    resolved = exact if len(exact) == 1 else (candidates if len(candidates) == 1 else [])
+    if len(resolved) == 1:
+        c = resolved[0]
+        return (f"PERSON RESOLVED — {c['name']} <{c['email']}>. Use exactly {c['email']} as the "
+                f"recipient. Directory object id: {c['id'] or '(not returned)'}.")
+
+    lines = [f"- {c['name']} <{c['email']}> (id: {c['id'] or 'not returned'})"
+             for c in candidates]
+    return (f"AMBIGUOUS DIRECTORY MATCH for {q!r}:\n" + "\n".join(lines) +
+            "\nAsk which person they mean before sending or sharing. Do not guess.")
 
 
 @mcp.tool()
@@ -1898,7 +1979,11 @@ def fetch_url(url: str, max_chars: int = 20000) -> str:
 
 @mcp.tool()
 def graph_query(path: str) -> str:
-    """Read-only escape hatch: GET any Graph v1.0 path as the agent (e.g. 'me/contacts')."""
+    """Read-only escape hatch: GET any Graph v1.0 path as the agent.
+
+    For a colleague named without an email address, use resolve_person instead. Do not use
+    `me/contacts`: it is the agent's private Outlook address book, not the tenant directory.
+    """
     if not path:
         return "ERROR: path is required."
     return _graph("GET", path)

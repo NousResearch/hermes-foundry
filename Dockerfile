@@ -54,7 +54,7 @@ import asyncio, agent365_mcp as m;\
 tools = asyncio.run(m.mcp.list_tools());\
 names = sorted(t.name for t in tools);\
 assert len(names) >= 20, f'only {len(names)} tools registered: {names}';\
-required = ['send_email','read_email','list_inbox','create_event','create_docx','create_xlsx','create_pptx','create_pdf','attach_to_event','share_file','web_search','fetch_url','browse_url','screenshot_url','run_code'];\
+    required = ['resolve_person','send_email','read_email','list_inbox','create_event','create_docx','create_xlsx','create_pptx','create_pdf','attach_to_event','share_file','web_search','fetch_url','browse_url','screenshot_url','run_code'];\
 missing = [r for r in required if r not in names];\
 assert not missing, f'missing tools: {missing}';\
 print('SIDECAR GUARD OK:', len(names), 'tools')"

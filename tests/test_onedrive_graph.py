@@ -132,6 +132,55 @@ class GraphOneDriveTests(unittest.TestCase):
         })
         self.assertIn("SHARED OK", result)
 
+    def test_resolve_person_uses_tenant_directory_and_prefers_exact_name(self):
+        directory = '''{"value":[
+            {"id":"user-1","displayName":"JohnDow","mail":"john@example.com",
+             "userPrincipalName":"john@example.com","accountEnabled":true},
+            {"id":"user-2","displayName":"JohnDowling","mail":"dowling@example.com",
+             "userPrincipalName":"dowling@example.com","accountEnabled":true}
+        ]}'''
+        with mock.patch.object(self.m, "_graph", return_value=directory) as graph:
+            result = self.m.resolve_person("JohnDow")
+
+        method, path = graph.call_args.args
+        self.assertEqual(method, "GET")
+        self.assertTrue(path.startswith("users?$filter="))
+        self.assertIn("displayName", path)
+        self.assertNotIn("me/contacts", path)
+        self.assertIn("PERSON RESOLVED", result)
+        self.assertIn("john@example.com", result)
+        self.assertNotIn("dowling@example.com", result)
+
+    def test_resolve_person_reports_ambiguous_matches_without_guessing(self):
+        directory = '''{"value":[
+            {"id":"user-1","displayName":"Alex Smith","mail":"alex1@example.com",
+             "userPrincipalName":"alex1@example.com","accountEnabled":true},
+            {"id":"user-2","displayName":"Alex Jones","mail":"alex2@example.com",
+             "userPrincipalName":"alex2@example.com","accountEnabled":true}
+        ]}'''
+        with mock.patch.object(self.m, "_graph", return_value=directory):
+            result = self.m.resolve_person("Alex")
+
+        self.assertIn("AMBIGUOUS DIRECTORY MATCH", result)
+        self.assertIn("alex1@example.com", result)
+        self.assertIn("alex2@example.com", result)
+        self.assertIn("Do not guess", result)
+
+    def test_resolve_person_does_not_fallback_to_contacts_after_graph_error(self):
+        with mock.patch.object(self.m, "_graph", return_value="ERROR 403 from Graph: denied") as graph:
+            result = self.m.resolve_person("JohnDow")
+
+        graph.assert_called_once()
+        self.assertIn("PERSON LOOKUP FAILED", result)
+        self.assertIn("Do not retry through me/contacts", result)
+
+    def test_resolve_person_rejects_empty_query_without_calling_graph(self):
+        with mock.patch.object(self.m, "_graph") as graph:
+            result = self.m.resolve_person("  ")
+
+        graph.assert_not_called()
+        self.assertIn("ERROR", result)
+
 
 if __name__ == "__main__":
     unittest.main()

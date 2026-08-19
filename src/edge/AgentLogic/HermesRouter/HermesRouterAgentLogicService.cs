@@ -729,12 +729,12 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         else if (!string.IsNullOrWhiteSpace(oid))
         {
             // A non-owner with no address on the activity — the normal Teams case. DO try the
-            // directory: the blueprint now has delegated User.Read.All / People.Read.All, so
-            // graph_query on users/{oid} should resolve them. Only fall back to asking if Graph
-            // actually refuses, and never claim to have emailed someone whose address you guessed.
+            // directory: the blueprint has delegated User.Read.All / User.ReadBasic.All, so the
+            // dedicated resolve_person tool should resolve them. Only fall back to asking if Graph
+            // actually refuses, and never claim to have emailed someone whose address was guessed.
             sb.Append($" (Microsoft Entra object id {oid}); Teams did not supply their address, so "
-                    + $"resolve it with graph_query on users/{oid} (or search by name with "
-                    + $"graph_query on users?$filter=...). If Graph returns 403, ask them for it "
+                    + $"resolve it with resolve_person using their name. If Graph returns 403, ask "
+                    + $"them for their address "
                     + $"instead — do not guess an address");
         }
 
