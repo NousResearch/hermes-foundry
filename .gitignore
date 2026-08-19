@@ -1,0 +1,37 @@
+# Build staging directories created by build.sh. Leading slashes prevent these rules from matching
+# the committed source directories under src/.
+/edge/
+/gateway/
+/sidecar/
+
+# .NET build output
+src/edge/bin/
+src/edge/obj/
+src/edge/publish/
+src/edge/.vs/
+
+# Local OS and editor state
+.DS_Store
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.cer
+*.crt
+*.jks
+*.keystore
+secrets/
+
+# Azure CLI and deployment output
+.azure/
+deployment-output/
+*.deployment.json
