@@ -69,6 +69,10 @@ Generated publish directories (`edge/`, `gateway/`, and `sidecar/`) are ignored 
 - Model deployments available to the Foundry project
 - Agent identity, Microsoft 365 permissions, and platform resources appropriate to the enabled tools
 
+For the complete tenant, licensing, Azure, identity, permission, build, and validation sequence, see
+[DEPLOYMENT.md](DEPLOYMENT.md). The guide also states which zero-to-one bootstrap artifacts are not
+yet included in this POC repository.
+
 ## Build
 
 Set the registry name without the `.azurecr.io` suffix and provide an image tag:

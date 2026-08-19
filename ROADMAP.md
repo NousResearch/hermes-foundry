@@ -57,7 +57,9 @@ distribution. It intentionally excludes tenant-specific deployment state and int
 
 ## 7. Distribution documentation
 
-- Publish a minimal installation guide for tenant administrators.
+- Keep the tenant-administrator [deployment runbook](DEPLOYMENT.md) aligned with the tested stack
+  and current Microsoft licensing. Convert it from maintainer-assisted instructions to a runnable
+  beginner installer when the bootstrap package in section 2 is complete.
 - Document required Microsoft Entra, Microsoft 365, Foundry, registry, storage, and Key Vault roles.
 - Document data boundaries, retention, outbound actions, and operational ownership.
 - Add troubleshooting guidance based on stable error contracts rather than deployment-specific logs.
