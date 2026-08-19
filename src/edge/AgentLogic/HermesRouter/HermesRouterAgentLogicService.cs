@@ -80,8 +80,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     /// <c>grant_type=user_fic</c> for the agent user). Microsoft's own workstream-manager sample
     /// uses exactly this to call Graph as the agent.
     ///
-    /// Sent per turn rather than cached in the sandbox: the sandbox is long-lived, the token is not,
-    /// and a standing credential inside the sandbox is precisely what the isolation model avoids.
+    /// Sent per turn rather than cached in the runtime: the container is long-lived, the token is
+    /// not, and a standing credential is precisely what the isolation model avoids.
     /// Failure is non-fatal — the turn proceeds without M365 tools rather than dying.
     /// </summary>
     // Resolve the per-instance owner from the agent user's manager. Cache the result for the process
@@ -652,8 +652,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
 
     // ---- helpers ----------------------------------------------------------------------------
 
-    /// <summary>Tell the agent who it IS. Without this it answers from whatever credentials the
-    /// sandbox holds and claims to be the human who messaged it.</summary>
+    /// <summary>Tell the agent who it IS. Without this it can confuse its own agent identity with
+    /// the human who messaged it.</summary>
     private string Prompt(string context, string body) =>
         $"You are {Clean(_agent?.EmailId) ?? "an AI teammate"}, an AI teammate with your own "
       + "Microsoft 365 identity and mailbox. You act as yourself, never as the person contacting "
@@ -744,7 +744,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         return sb.ToString();
     }
 
-    /// <summary>Partition key for sandbox + memory: the AGENT INSTANCE, not the sender. One
+    /// <summary>Partition key for runtime + memory: the AGENT INSTANCE, not the sender. One
     /// blueprint serves N agent identities, and each owns its own state.</summary>
     private string AgentKey(ITurnContext turnContext = null)
     {
@@ -762,9 +762,9 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     /// every user would share one conversation and one long-term memory. Fine for a single owner,
     /// a privacy leak the moment a colleague uses it.
     ///
-    /// Keyed on the caller's Entra object id, hashed, with the `tuser` prefix that `LOG.md` (2026-07-13)
-    /// records as already proven byte-identical between the C# adapter and the Python edge — so a
-    /// signed-in user keeps one memory across front doors with no account-linking store.
+    /// Keyed on the caller's Entra object id and hashed with the `tuser` prefix. The C# edge and
+    /// Python gateway use the same derivation, so a signed-in user keeps one memory across front
+    /// doors without an account-linking store.
     ///
     /// CROSS-CHANNEL CAVEAT, stated rather than hidden: Teams activities carry From.AadObjectId, but an
     /// EMAIL turn does not — it carries only the sender's address, which we resolve separately. Those
@@ -990,8 +990,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     }
 
     /// <summary>"v1.&lt;payload&gt;.&lt;sig&gt;" — proves WHICH identity this ingress verified. The
-    /// router runs REQUIRE_SIGNED_IDENTITY=1 (finding H2); without it the turn is rejected outright.
-    /// Must match verify_identity_assertion() in sandbox-router/router.py.</summary>
+    /// gateway runs REQUIRE_SIGNED_IDENTITY=1; without it the turn is rejected outright.
+    /// Must match verify_identity_assertion() in src/gateway/app.py.</summary>
     private string MintIdentityAssertion(string sessionKey)
     {
         if (_signKey == null || string.IsNullOrEmpty(sessionKey)) return null;

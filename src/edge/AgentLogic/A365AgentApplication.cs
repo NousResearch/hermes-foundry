@@ -13,6 +13,8 @@ using Microsoft.Agents.A365.Notifications.Models;
 /// </summary>
 public class A365AgentApplication : AgentApplication
 {
+    // Historical type name. The factory selects production HermesRouter unless an operator
+    // explicitly opts into the non-production ResponsesApi compatibility path.
     private readonly ResponsesApiAgentLogicServiceFactory _factory;
     private readonly IConfiguration _configuration;
     private readonly ILogger<A365AgentApplication> _logger;

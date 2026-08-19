@@ -3,6 +3,12 @@
 Hermes Full Foundry packages a Microsoft 365 agent edge, a request gateway, Hermes, and an
 agent-identity Microsoft 365 sidecar into one container hosted by Microsoft Foundry.
 
+> [!WARNING]
+> **This repository is a work in progress and proof of concept. It demonstrates the Full Foundry
+> architecture and working core Microsoft 365 flows, but it is not currently a production-ready,
+> supported enterprise distribution.** Review the limitations below before deploying it beyond an
+> isolated development tenant.
+
 The repository is self-contained. It does not depend on source files, scripts, or infrastructure
 definitions from another repository.
 
@@ -24,6 +30,18 @@ Microsoft 365 / Foundry
 ```
 
 Only the edge port is exposed. All internal services communicate over loopback.
+
+### Execution modes: do not confuse these names
+
+- `HermesRouter` is the default, main Full Foundry runtime. Interactive Activity turns are forwarded
+  to the in-container Hermes gateway, Hermes, and the Microsoft 365 sidecar.
+- `AgentLogic=ResponsesApi` is a retained **non-production compatibility and diagnostic mode**. It
+  calls the Foundry Responses API directly with discovered MCP servers and bypasses Hermes, its
+  memory, sidecar tools, prompt/tool loop, and authority behavior. It is never selected implicitly
+  and is not a production fallback.
+- The **Responses protocol** endpoint is different from `AgentLogic=ResponsesApi`. It is a wire
+  protocol required for Foundry routines and forwards scheduled invocations to the normal Hermes
+  runtime.
 
 ## Repository layout
 
@@ -75,7 +93,7 @@ not real deployment values.
 | `AZURE_FOUNDRY_BASE_URL` | Foundry inference base URL |
 | `AZURE_AI_PROJECT_ENDPOINT` | Foundry project endpoint used by data-plane tools |
 | `IdentitySignKey` | Signs edge-to-gateway identity assertions |
-| `AgentLogic` | Selects the edge logic implementation |
+| `AgentLogic` | Use `HermesRouter` for the main runtime. `ResponsesApi` is explicit non-production compatibility mode only. |
 | `AgentBlueprintId` | Agent blueprint application identifier |
 | `AgentInstanceId` | Agent instance identifier |
 | `AgentUpn` | Agent user principal name |
@@ -156,6 +174,45 @@ Build-time guards also verify that the sidecar imports, its required MCP tools r
 
 ## Project status
 
-The image and core Microsoft 365 file/mail paths are functional. Production packaging, routine
-credential automation, broader test coverage, and reusable tenant installation remain active work.
-See [ROADMAP.md](ROADMAP.md).
+The image and core Microsoft 365 file/mail paths are functional, but the project remains a WIP/POC.
+Known non-production areas include:
+
+- **Installation and portability:** there is no one-click tenant installer or complete
+  infrastructure-as-code package. A tenant administrator must first create/configure the Foundry
+  project, hosted agent, registry, agent identity, permissions, toolboxes, and model deployments.
+  `new-version.sh` updates an existing hosted agent by cloning its serving definition; it does not
+  bootstrap a fresh tenant.
+- **Models and releases:** release defaults currently name `gpt-5.6-terra` and `gpt-5.6-luna`.
+  They can be overridden, but automatic deployment discovery, compatibility validation, quota
+  handling, and a tenant-aware model-routing policy are not implemented.
+- **Routines/cron:** the Responses-protocol adapter can receive scheduled invocations, but non-turn
+  agent identity currently requires manually configured blueprint credentials in Azure Key Vault.
+  Certificate enrollment, rotation, expiry monitoring, revocation, and routine lifecycle management
+  are not automated. Routine session isolation and end-to-end coverage are limited. We are waiting
+  for Microsoft guidance on a simpler or alternative supported non-turn identity flow.
+- **Microsoft 365 provisioning:** Graph and native MCP operations depend on the tenant having
+  provisioned the Agent User's workloads and granted the necessary permissions. The repository does
+  not automate tenant-wide consent, mailbox/OneDrive readiness, or every service-specific policy.
+- **Files:** the current OneDrive implementation uses simple upload requests. Resumable upload
+  sessions, robust large-file transfer, retry/resume, and broad file-type testing are not complete.
+- **Tool dependencies:** browser automation and code interpretation are custom wrappers around
+  Foundry toolboxes rather than unrestricted processes inside the container. Missing toolbox
+  resources, permissions, or regional availability reduce functionality. Local arbitrary command
+  execution is intentionally not exposed to the agent.
+- **Container/runtime:** edge, gateway, Hermes, and sidecar run as multiple processes in one hosted
+  container with shell-based supervision. Only the edge is public; internal services are loopback
+  only. Local scratch paths are ephemeral, browser execution is external, and behavior across
+  scale-to-zero, restarts, concurrent sessions, resource pressure, and platform upgrades needs more
+  validation.
+- **Security:** generic Graph writes, outbound email, sharing, and calendar actions are powerful
+  capabilities. The current authority checks and short-lived-token handoff are POC controls, not a
+  completed enterprise security posture. Formal threat modeling, approvals for high-impact actions,
+  least-privilege review, DLP/retention integration, audit guarantees, and penetration testing remain
+  work.
+- **Reliability and operations:** coverage is currently a small unit-test suite plus build-time
+  checks. There is no complete CI/release pipeline, tenant-isolated integration matrix, load/chaos
+  testing, SLO, rollback automation, or mature metrics/alerting package.
+- **Distribution and support:** upgrade compatibility, support policy, SBOM/signing/scanning,
+  licensing, disaster recovery, and long-term state migration/backup procedures are not finalized.
+
+The prioritized productionization work is tracked in [ROADMAP.md](ROADMAP.md).

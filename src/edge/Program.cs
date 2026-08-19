@@ -46,6 +46,8 @@ builder.AddAgent<A365AgentApplication>();
 // Uncomment this so you can get logs of activities.
 // builder.Services.AddSingleton<Microsoft.Agents.Builder.IMiddleware[]>([new TranscriptLoggerMiddleware(new FileTranscriptLogger())]);
 
+// Historical name: this factory returns HermesRouter by default. ResponsesApi is an explicit,
+// non-production compatibility option only; see the factory's documentation.
 builder.Services.AddSingleton<ResponsesApiAgentLogicServiceFactory>();
 
 // Register auth helper
@@ -82,6 +84,8 @@ builder.Logging.AddApplicationInsights();
 
 
 // ─── Responses protocol ───────────────────────────────────────────────────────────────────────
+// IMPORTANT: "Responses protocol" here is NOT AgentLogic=ResponsesApi. This is a wire-protocol
+// adapter that lets Foundry routines invoke the normal HermesRouter/Hermes runtime.
 // Added alongside the Activity protocol, not instead of it. Microsoft's hosted-agents guidance
 // names "Responses + Activity" as the shape for an agent published to Teams/M365, and only the
 // Responses (or Invocations) protocol can be targeted by a Foundry ROUTINE — which is how the agent
@@ -107,7 +111,8 @@ logger.LogWarning("Application starting...");
 // ===================================
 app.UseRouting();
 
-// Responses protocol middleware + endpoints (/responses). Mapped before /api/messages so both
+// Routine wire-protocol middleware + endpoints (/responses). This still routes into Hermes; it does
+// not enable the non-production ResponsesApi AgentLogic implementation. Mapped before /api/messages so both
 // protocols are served by the one container, which is what "protocols can be combined" requires.
 app.UseAgentServerCore();
 app.MapResponsesServer();

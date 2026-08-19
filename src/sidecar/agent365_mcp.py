@@ -1,14 +1,13 @@
 """Agent-identity MCP sidecar — the agent's OWN Microsoft 365.
 
-The counterpart to graph_mcp.py. That one proxies to the capability broker and acts as the
-signed-in HUMAN (delegate model). This one acts as the AGENT ITSELF: an autopilot with its own
-Entra Agent ID, mailbox and calendar.
+This service acts as the AGENT ITSELF: an autopilot with its own Entra Agent ID, mailbox, files,
+and calendar. It does not borrow the identity of the human speaking to it through a delegated OBO
+flow.
 
-The token is an **agentic user token** minted by the Foundry thin edge via the documented
-three-step exchange (managed identity -> blueprint, blueprint -> instance FIC, then
-`grant_type=user_fic` for the agent user) and handed to the sandbox per turn. See
-Microsoft.Agents.A365 `AgentTokenHelper`; the same flow backs Microsoft's own
-foundry-workstream-manager sample when it calls Graph.
+The token is an **agentic user token** minted by the Foundry edge through Microsoft.Agents.A365
+`AgentTokenHelper`. Interactive turns hand the short-lived token to the in-container gateway; this
+sidecar retrieves it over an authenticated loopback endpoint instead of persisting it. Turn-less
+routine credentials use the separate, explicitly configured autonomous identity flow.
 
 There is no sign-in tool here on purpose. An autopilot never signs a human in — if the token is
 missing or expired that is an infrastructure fault to surface, not something a user can fix from
@@ -32,7 +31,7 @@ import urllib.request
 from mcp.server.fastmcp import FastMCP
 
 GRAPH = "https://graph.microsoft.com/v1.0"
-# Minted per turn by the edge and refreshed on every turn, so a long-lived sandbox never holds a
+# Minted per turn by the edge and refreshed on every turn, so the long-lived runtime never holds a
 # stale credential. Read lazily (not captured at import) so a relaunch picks up the new value.
 _TOKEN_ENV = "AGENT_GRAPH_TOKEN"
 AGENT_UPN = os.environ.get("AGENT_UPN", "")
@@ -134,8 +133,7 @@ def _token() -> str:
 
     Two sources, in order:
 
-    1. AGENT_GRAPH_TOKEN — set once at process start. This is how sandbox-router runs it: the
-       sidecar is relaunched per turn with that turn's freshly minted token.
+    1. AGENT_GRAPH_TOKEN — optional process-start injection retained for compatible deployments.
     2. AGENT_TOKEN_URL — polled. Needed when the sidecar is a LONG-LIVED container next to Hermes
        rather than a per-turn process, because an env var captured at start goes stale in an hour
        and there is no relaunch to refresh it.
@@ -223,7 +221,7 @@ def _graph(method: str, path: str, body=None, raw_body: bool = False) -> str:
     """
     tok = _token()
     if not tok:
-        return ("ERROR: no agent credential present in this sandbox. The Foundry edge did not "
+        return ("ERROR: no agent credential present in this runtime. The Foundry edge did not "
                 "supply an agentic user token for this turn. This is a system fault — report it.")
     url = path if path.startswith("http") else f"{GRAPH}/{path.lstrip('/')}"
     data = None
@@ -289,7 +287,7 @@ def _graph_bytes(method: str, path: str):
     """
     tok = _token()
     if not tok:
-        return None, "ERROR: no agent credential present in this sandbox."
+        return None, "ERROR: no agent credential present in this runtime."
     url = path if path.startswith("http") else f"{GRAPH}/{path.lstrip('/')}"
 
     class _NoRedirect(urllib.request.HTTPRedirectHandler):

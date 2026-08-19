@@ -10,6 +10,10 @@ namespace HelloWorldA365.AgentLogic.ResponsesProtocol;
 /// <summary>
 /// Serves the <b>Responses</b> protocol, alongside the Activity protocol on /api/messages.
 ///
+/// <para><b>This is not <c>AgentLogic=ResponsesApi</c>.</b> "Responses protocol" is only the wire
+/// protocol Foundry routines use to wake the agent. This handler remains on the normal HermesRouter
+/// path and forwards routine input to the same in-container Hermes gateway as interactive turns.</para>
+///
 /// Foundry <b>routines</b> (timer / recurring / event triggers) can only act via
 /// <c>invoke_agent_responses_api</c> or <c>invoke_agent_invocations_api</c>. Neither can target an
 /// agent that declares only the Activity protocol. Hosted agents can combine Responses and Activity

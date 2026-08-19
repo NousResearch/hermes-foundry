@@ -104,7 +104,7 @@ log "config sanity: $(head -c 120 "$HERMES_STATE/.hermes/config.yaml" | tr '\n' 
 
 # Respawn wrapper. Output goes to the container's STDOUT, prefixed — redirecting to files hid the
 # edge's bind exception from :logstream for several deploy cycles, and :logstream is the only view
-# into a hosted-agent sandbox.
+# into a hosted-agent container.
 supervise() {
   local name="$1"; shift
   ( while true; do
@@ -117,7 +117,7 @@ supervise() {
 }
 
 # ⚠️ PORT=8088 is injected by the platform — it is the port the AGENT must serve on, and the agent
-# is the edge. edge-gateway/app.py reads os.environ["PORT"], so in a single container it grabbed
+# is the edge. The gateway also reads os.environ["PORT"], so in a single container it grabbed
 # 8088 first and the edge died with "address already in use". Pin every port explicitly.
 # The sidecar runs on its OWN venv interpreter, never the ambient `python3` — that is Hermes' venv,
 # which does not have our pins and produced `ModuleNotFoundError: mcp.server.fastmcp`.

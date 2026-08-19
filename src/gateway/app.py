@@ -33,8 +33,8 @@ OUTBOX = os.environ.get("AGENT_OUTBOX", "/tmp/agent-outbox")
 UPSTREAM_TIMEOUT = int(os.environ.get("UPSTREAM_TIMEOUT", "900"))
 
 # How long a turn will wait for a cold Hermes before giving up (see the retry loop in do_POST).
-# 0 preserves the original fail-fast behaviour for the split ACA deployment, where Hermes is a
-# separate always-on container and "connection refused" really does mean broken.
+# 0 keeps fail-fast behavior available. Full Foundry sets a positive wait because Hermes starts in
+# this same container and may still be warming when the edge becomes ready.
 HERMES_COLD_START_WAIT = int(os.environ.get("HERMES_COLD_START_WAIT", "0"))
 
 # Where Hermes' stdout is teed, so a 502 can carry its tail (see do_POST). Empty = feature off.
@@ -139,12 +139,12 @@ def _ship(message: str, level: int = 1):
                 "name": "Microsoft.ApplicationInsights.Message",
                 "time": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
                 "iKey": _AI_IKEY,
-                "tags": {"ai.cloud.role": "plan-f-gateway",
-                         "ai.cloud.roleInstance": os.environ.get("HOSTNAME", "plan-f")},
+                "tags": {"ai.cloud.role": "hermes-full-foundry-gateway",
+                         "ai.cloud.roleInstance": os.environ.get("HOSTNAME", "full-foundry")},
                 "data": {"baseType": "MessageData",
                          "baseData": {"ver": 2, "message": message[:8000],
                                       "severityLevel": level,
-                                      "properties": {"source": "plan-f-gateway"}}},
+                                      "properties": {"source": "hermes-full-foundry-gateway"}}},
             }).encode()
             req = urllib.request.Request(_AI_URL, data=body,
                                         headers={"Content-Type": "application/json"})
@@ -186,8 +186,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, b'{"ok":true}')
             return
         # The m365 MCP sidecar polls this for the agent's current Graph token. The sidecar sits next
-        # to Hermes as a long-lived container, so it cannot take the token from an env var captured
-        # at start the way the per-turn sandbox sidecar does.
+        # to Hermes as a long-lived process, so it cannot rely on a token captured in an environment
+        # variable at container startup.
         #
         # Deliberately in-memory and never written to disk: this is a user token for the AGENT, and
         # persisting it would create the standing credential the whole design avoids. If no turn has
@@ -353,7 +353,7 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     log(f"[edge] hermes.unreachable | {type(e).__name__}: {e}")
                     # Include the tail of Hermes' own log in the 502 body. In a Foundry hosted
-                    # sandbox :logstream is the only window in, and sessions go idle before it can
+                    # container :logstream is the primary debugging window, and sessions can go idle before it can
                     # be attached — so the reply itself has to carry the diagnosis or the failure
                     # is simply undebuggable from outside.
                     tail = ""

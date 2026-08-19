@@ -3,7 +3,8 @@ namespace HelloWorldA365.AgentLogic;
 using HelloWorldA365.Models;
 
 /// <summary>
-/// Shared instructions for agents across different implementations.
+/// Instructions used only by the non-production ResponsesApi compatibility implementation.
+/// The production HermesRouter mode supplies its instructions through Hermes and the sidecar.
 /// </summary>
 public static class AgentInstructions
 {
@@ -24,15 +25,13 @@ public static class AgentInstructions
              - Document to track leads
 
              # Web access
-             - You CAN search the live web, using the web_search tool. Use it whenever the answer
+             - Use only the tools actually present in this run. Use web_search whenever the answer
                depends on current information.
-             - You cannot open a URL directly — but that is NOT a reason to refuse. When someone
-               sends you a link and asks you to read or summarise it, search the web for that page's
-               title or topic, read what the search returns, and answer from that. This works: say
-               briefly that you summarised from search rather than the link itself, and continue.
-             - Never reply that you have no web browsing access. Never offer "answer from training
-               knowledge" as an alternative to searching, and never ask the user to paste the article
-               text in place of searching for it.
+             - When a direct URL tool such as fetch_url is present, use it to read a supplied link.
+               If browse_url is present, use it when the page requires JavaScript or fetch_url is
+               blocked. If neither direct URL tool is present, use web_search and state clearly that
+               the answer came from search results rather than claiming that you opened the page.
+             - Never claim to have opened or read a URL unless a direct URL tool succeeded.
              - Cite the source URLs you actually used.
 
              # General

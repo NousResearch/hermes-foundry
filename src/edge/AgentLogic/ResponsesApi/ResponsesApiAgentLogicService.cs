@@ -15,8 +15,13 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 
 /// <summary>
-/// OpenAI Responses API-based implementation of AgentLogicService.
-/// Uses MCP tool definitions directly via the Responses API's native MCP support.
+/// <b>Non-production compatibility/reference implementation.</b>
+///
+/// This path calls the Foundry Responses API directly and supplies discovered Microsoft 365 MCP
+/// servers. It is retained for controlled platform diagnostics and comparison with Microsoft's
+/// stock hosted-agent flow. It bypasses Hermes, its gateway, sidecar tools, memory, and authority
+/// behavior, so it is not the Full Foundry production runtime and carries no feature-parity promise.
+/// It can only be selected explicitly with <c>AgentLogic=ResponsesApi</c>.
 /// </summary>
 public class ResponsesApiAgentLogicService : IAgentLogicService
 {
@@ -259,11 +264,13 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             }
         }).ToArray<object>();
 
-        // HERMES: give this path web access.
+        // Compatibility-path web search. This does not make the ResponsesApi mode equivalent to
+        // Hermes: it still bypasses Hermes and the sidecar's fetch_url/browse_url tools.
         //
         // The sample's tool array is MCP servers and nothing else, so an agent on this path can read
         // mail and files but cannot open a link — in Teams it answers "I don't have web-browsing
-        // access", which is accurate. Our Hermes container grew web_search/fetch_url tools, but they
+        // access", which was accurate for this path. The Hermes container has web_search,
+        // fetch_url, and browse_url tools, but they
         // live in the agent365-mcp sidecar next to Hermes, and this path never reaches Hermes at all
         // (AgentLogic=ResponsesApi calls the model directly). Fixing it there fixed nothing here.
         //

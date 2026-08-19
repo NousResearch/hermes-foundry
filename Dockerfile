@@ -2,7 +2,7 @@
 #
 #   Foundry hosted agent container:
 #     :8088  edge      (.NET, HelloWorldA365Agent) — Activity + Responses, what Foundry calls
-#     :8080  gateway   (edge-gateway/app.py)       — translation + agent-token vending
+#     :8080  gateway   (src/gateway/app.py)        — translation + agent-token vending
 #     :8010  sidecar   (agent365_mcp.py)           — the agent's own M365 tools
 #     :<hermes> Hermes (the real image)            — the brain
 #
