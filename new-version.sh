@@ -29,10 +29,10 @@ ROUTINE_CREDENTIAL_VAULT_URI="${ROUTINE_CREDENTIAL_VAULT_URI:-}"
 ROUTINE_CREDENTIAL_CERTIFICATE_NAME="${ROUTINE_CREDENTIAL_CERTIFICATE_NAME:-}"
 
 # Resolve the tag to an immutable digest before creating the agent version.
-DIGEST=$(az acr repository show --name "$REG" --image "hermes-full-foundry:$TAG" \
+DIGEST=$(az acr repository show --name "$REG" --image "hermes-foundry:$TAG" \
            --query "digest" -o tsv)
-[ -n "$DIGEST" ] || { echo "ERROR: no digest for hermes-full-foundry:$TAG in $REG"; exit 1; }
-IMAGE="${REG}.azurecr.io/hermes-full-foundry@${DIGEST}"
+[ -n "$DIGEST" ] || { echo "ERROR: no digest for hermes-foundry:$TAG in $REG"; exit 1; }
+IMAGE="${REG}.azurecr.io/hermes-foundry@${DIGEST}"
 echo "==> image: $IMAGE"
 
 CUR=$(az rest --method GET --resource "$RES" \

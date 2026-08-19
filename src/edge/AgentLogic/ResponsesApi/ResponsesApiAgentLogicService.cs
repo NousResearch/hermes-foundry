@@ -20,7 +20,7 @@ using System.Text.Json.Serialization;
 /// This path calls the Foundry Responses API directly and supplies discovered Microsoft 365 MCP
 /// servers. It is retained for controlled platform diagnostics and comparison with Microsoft's
 /// stock hosted-agent flow. It bypasses Hermes, its gateway, sidecar tools, memory, and authority
-/// behavior, so it is not the Full Foundry production runtime and carries no feature-parity promise.
+/// behavior, so it is not the Hermes runtime and carries no feature-parity promise.
 /// It can only be selected explicitly with <c>AgentLogic=ResponsesApi</c>.
 /// </summary>
 public class ResponsesApiAgentLogicService : IAgentLogicService

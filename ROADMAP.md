@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap covers work required to turn Hermes Full Foundry into a repeatable, tenant-neutral
+This roadmap covers work required to turn Hermes Foundry into a repeatable, tenant-neutral
 distribution. It intentionally excludes tenant-specific deployment state and internal research.
 
 ## 1. Reproducible release baseline

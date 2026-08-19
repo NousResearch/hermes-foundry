@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Hermes Full Foundry entrypoint.
+# Hermes Foundry entrypoint.
 #
 # Startup order is part of the runtime contract:
 #
@@ -15,7 +15,7 @@
 # Bind the edge before slow initialization so the platform readiness window is respected.
 set -uo pipefail
 
-log() { echo "[full-foundry] $*"; }
+log() { echo "[hermes-foundry] $*"; }
 
 : "${MODEL_DEPLOYMENT_NAME:?MODEL_DEPLOYMENT_NAME is required}"
 : "${FALLBACK_MODEL_DEPLOYMENT_NAME:?FALLBACK_MODEL_DEPLOYMENT_NAME is required}"

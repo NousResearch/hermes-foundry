@@ -1,10 +1,10 @@
-# Hermes Full Foundry
+# Hermes Foundry
 
-Hermes Full Foundry packages a Microsoft 365 agent edge, a request gateway, Hermes, and an
+Hermes Foundry packages a Microsoft 365 agent edge, a request gateway, Hermes, and an
 agent-identity Microsoft 365 sidecar into one container hosted by Microsoft Foundry.
 
 > [!WARNING]
-> **This repository is a work in progress and proof of concept. It demonstrates the Full Foundry
+> **This repository is a work in progress and proof of concept. It demonstrates the Hermes Foundry
 > architecture and working core Microsoft 365 flows, but it is not currently a production-ready,
 > supported enterprise distribution.** Review the limitations below before deploying it beyond an
 > isolated development tenant.
@@ -33,7 +33,7 @@ Only the edge port is exposed. All internal services communicate over loopback.
 
 ### Execution modes: do not confuse these names
 
-- `HermesRouter` is the default, main Full Foundry runtime. Interactive Activity turns are forwarded
+- `HermesRouter` is the default, main Hermes runtime. Interactive Activity turns are forwarded
   to the in-container Hermes gateway, Hermes, and the Microsoft 365 sidecar.
 - `AgentLogic=ResponsesApi` is a retained **non-production compatibility and diagnostic mode**. It
   calls the Foundry Responses API directly with discovered MCP servers and bypasses Hermes, its
@@ -50,7 +50,7 @@ src/edge/       .NET Foundry and Microsoft 365 agent edge
 src/gateway/    edge-to-Hermes gateway
 src/sidecar/    Microsoft 365 and utility MCP tools
 tests/          sidecar unit tests
-Dockerfile      full hosted-agent image
+Dockerfile      combined hosted-agent image
 start.sh        process startup and supervision
 build.sh        local publish and Azure Container Registry build
 new-version.sh  safe hosted-agent version creation and verification

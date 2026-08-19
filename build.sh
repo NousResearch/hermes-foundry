@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Hermes Full Foundry: edge, gateway, Hermes, and the Microsoft 365 sidecar in one image.
+# Build Hermes Foundry: edge, gateway, Hermes, and the Microsoft 365 sidecar in one image.
 # The repository is self-contained; builds must use only source under ./src.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -33,5 +33,5 @@ cp "$SRC/gateway/app.py" gateway/
 cp "$SRC/sidecar/agent365_mcp.py" sidecar/
 
 echo "==> building in ACR (tag $TAG)"
-az acr build --registry "$REG" --image "hermes-full-foundry:$TAG" --file Dockerfile .
-echo "==> done: $REG.azurecr.io/hermes-full-foundry:$TAG"
+az acr build --registry "$REG" --image "hermes-foundry:$TAG" --file Dockerfile .
+echo "==> done: $REG.azurecr.io/hermes-foundry:$TAG"

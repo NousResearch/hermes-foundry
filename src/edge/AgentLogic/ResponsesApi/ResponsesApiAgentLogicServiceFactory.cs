@@ -11,7 +11,7 @@ using Microsoft.Agents.Builder.App.UserAuth;
 /// <summary>
 /// Selects the edge implementation for an interactive Activity turn.
 ///
-/// <para><b>HermesRouter is the supported Full Foundry runtime and the default.</b> The factory's
+/// <para><b>HermesRouter is the supported Hermes runtime and the default.</b> The factory's
 /// name is historical: <see cref="ResponsesApiAgentLogicService"/> is retained only as a
 /// non-production compatibility/reference path for comparing the stock Microsoft Responses API
 /// flow and diagnosing platform identity or MCP discovery. It is not the main mode, is never
@@ -26,15 +26,15 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
 
     public async Task<IAgentLogicService> CreateAsync(AgentMetadata agent, ITurnContext turnContext, UserAuthorization userAuthorization)
     {
-        // PRODUCTION PATH: HermesRouter forwards the turn to the Hermes gateway in this same
-        // Full Foundry container. Keep this as the default. In particular, do not change this to a
+        // MAIN PATH: HermesRouter forwards the turn to the Hermes gateway in this same Foundry
+        // container. Keep this as the default. In particular, do not change this to a
         // loose "anything other than HermesRouter means ResponsesApi" fallback: a misspelled setting
         // must fail loudly instead of silently replacing Hermes with the compatibility implementation.
         var agentLogic = configuration["AgentLogic"] ?? "HermesRouter";
         if (agentLogic.Equals("HermesRouter", StringComparison.OrdinalIgnoreCase))
         {
             logger.LogInformation(
-                "Using production HermesRouter mode for agent {AgentId} (instance {InstanceId}); forwarding to the in-container Hermes gateway.",
+                "Using main HermesRouter mode for agent {AgentId} (instance {InstanceId}); forwarding to the in-container Hermes gateway.",
                 agent.AgentId, agent.AgentApplicationId);
             return new HermesRouter.HermesRouterAgentLogicService(agent, configuration, logger, tokenHelper, userAuthorization);
         }
@@ -52,7 +52,7 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
         // Microsoft's stock sample flow; it is not a production fallback or an alternate Hermes mode.
         logger.LogWarning(
             "NON-PRODUCTION AgentLogic=ResponsesApi selected for agent {AgentId} (instance {InstanceId}). " +
-            "This compatibility path bypasses Hermes and does not provide Full Foundry feature parity.",
+            "This compatibility path bypasses Hermes and does not provide Hermes runtime feature parity.",
             agent.AgentId, agent.AgentApplicationId);
 
         // Diagnostic-only identity metadata for comparing this stock-compatible path with the

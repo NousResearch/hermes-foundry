@@ -1,4 +1,4 @@
-"""Loopback gateway for Hermes Full Foundry.
+"""Loopback gateway for Hermes Foundry.
 
 The edge talks to two endpoints:
 
@@ -33,8 +33,8 @@ OUTBOX = os.environ.get("AGENT_OUTBOX", "/tmp/agent-outbox")
 UPSTREAM_TIMEOUT = int(os.environ.get("UPSTREAM_TIMEOUT", "900"))
 
 # How long a turn will wait for a cold Hermes before giving up (see the retry loop in do_POST).
-# 0 keeps fail-fast behavior available. Full Foundry sets a positive wait because Hermes starts in
-# this same container and may still be warming when the edge becomes ready.
+# 0 keeps fail-fast behavior available. This deployment sets a positive wait because Hermes starts
+# in this same container and may still be warming when the edge becomes ready.
 HERMES_COLD_START_WAIT = int(os.environ.get("HERMES_COLD_START_WAIT", "0"))
 
 # Where Hermes' stdout is teed, so a 502 can carry its tail (see do_POST). Empty = feature off.
@@ -139,12 +139,12 @@ def _ship(message: str, level: int = 1):
                 "name": "Microsoft.ApplicationInsights.Message",
                 "time": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
                 "iKey": _AI_IKEY,
-                "tags": {"ai.cloud.role": "hermes-full-foundry-gateway",
-                         "ai.cloud.roleInstance": os.environ.get("HOSTNAME", "full-foundry")},
+                "tags": {"ai.cloud.role": "hermes-foundry-gateway",
+                         "ai.cloud.roleInstance": os.environ.get("HOSTNAME", "hermes-foundry")},
                 "data": {"baseType": "MessageData",
                          "baseData": {"ver": 2, "message": message[:8000],
                                       "severityLevel": level,
-                                      "properties": {"source": "hermes-full-foundry-gateway"}}},
+                                      "properties": {"source": "hermes-foundry-gateway"}}},
             }).encode()
             req = urllib.request.Request(_AI_URL, data=body,
                                         headers={"Content-Type": "application/json"})

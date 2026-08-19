@@ -1,4 +1,4 @@
-# Hermes Full Foundry packages four processes into one Foundry-hosted container:
+# Hermes Foundry packages four processes into one Foundry-hosted container:
 #
 #   Foundry hosted agent container:
 #     :8088  edge      (.NET, HelloWorldA365Agent) — Activity + Responses, what Foundry calls
@@ -47,7 +47,7 @@ COPY start.sh    /opt/start.sh
 RUN chmod +x /opt/start.sh
 
 # Build-time guards prevent an incomplete tool surface or unusable .NET runtime from deploying.
-#   1. The sidecar imports AND registers its full tool surface with the venv interpreter.
+#   1. The sidecar imports AND registers its complete tool surface with the venv interpreter.
 #   2. The .NET runtime actually executes (a script-installed one aborted with SIGABRT at startup).
 RUN cd /opt/sidecar && /opt/sidecar-venv/bin/python -c "\
 import asyncio, agent365_mcp as m;\
