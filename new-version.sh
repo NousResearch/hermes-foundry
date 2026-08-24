@@ -12,10 +12,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-: "${ACCOUNT:?Set ACCOUNT to the Foundry account name}"
-: "${PROJECT:?Set PROJECT to the Foundry project name}"
-: "${AGENT:?Set AGENT to the hosted-agent name}"
-: "${REG:?Set REG to the Azure Container Registry name (without .azurecr.io)}"
+[ ! -f .deployment.local ] || source ./.deployment.local
+: "${ACCOUNT:?Set ACCOUNT to the Foundry account name, or add it to .deployment.local}"
+: "${PROJECT:?Set PROJECT to the Foundry project name, or add it to .deployment.local}"
+: "${AGENT:?Set AGENT to the hosted-agent name, or add it to .deployment.local}"
+: "${REG:?Set REG to the Azure Container Registry name (without .azurecr.io), or add it to .deployment.local}"
 BASE="https://${ACCOUNT}.services.ai.azure.com/api/projects/${PROJECT}"
 RES="https://ai.azure.com"
 
@@ -25,6 +26,7 @@ TAG="${1:-}"
 # Override these names to match model deployments available in the target Foundry project.
 PRIMARY_MODEL="${PRIMARY_MODEL:-gpt-5.6-terra}"
 FALLBACK_MODEL="${FALLBACK_MODEL:-gpt-5.6-luna}"
+PROJECT_MODEL_BASE_URL="${PROJECT_MODEL_BASE_URL:-${BASE}/openai/v1}"
 ROUTINE_CREDENTIAL_VAULT_URI="${ROUTINE_CREDENTIAL_VAULT_URI:-}"
 ROUTINE_CREDENTIAL_CERTIFICATE_NAME="${ROUTINE_CREDENTIAL_CERTIFICATE_NAME:-}"
 
@@ -45,19 +47,60 @@ trap 'rm -rf "$WORK"' EXIT
 az rest --method GET --resource "$RES" \
   --url "${BASE}/agents/${AGENT}/versions/${CUR}?api-version=v1" -o json > "$WORK/cur.json"
 
+# A release must not silently lose Graph permissions inherited by child Agent Identities.
+verify_graph_inheritance() {
+  local version_json="$1" stage="$2" blueprint out
+  blueprint=$(python3 -c \
+    "import json,sys; print((json.load(open(sys.argv[1])).get('blueprint') or {}).get('client_id') or '')" \
+    "$version_json")
+  [ -n "$blueprint" ] || { echo "ABORT: $stage version has no blueprint client id"; return 1; }
+  out="$WORK/graph-inheritance-$stage.json"
+  az rest --method GET \
+    --url "https://graph.microsoft.com/v1.0/applications/${blueprint}/microsoft.graph.agentIdentityBlueprint/inheritablePermissions/00000003-0000-0000-c000-000000000000" \
+    -o json > "$out"
+  python3 - "$out" "$stage" <<'PY'
+import json, sys
+required = {
+    "Chat.ReadWrite", "Mail.ReadWrite", "Mail.Send", "User.Read.All",
+    "User.ReadBasic.All", "Files.ReadWrite.All", "Calendars.ReadWrite",
+    "Sites.ReadWrite.All",
+}
+payload = json.load(open(sys.argv[1]))
+actual = set((payload.get("inheritableScopes") or {}).get("scopes") or [])
+missing = sorted(required - actual)
+if missing:
+    raise SystemExit(
+        f"ABORT: {sys.argv[2]} blueprint is missing Graph inheritable scopes: {missing}. "
+        "Do not publish or route another version until permissions are reconciled."
+    )
+print(f"  Graph inheritance ({sys.argv[2]}): verified {len(required)} required scopes")
+PY
+}
+
+verify_graph_inheritance "$WORK/cur.json" "serving-v$CUR"
+
 # Clone the serving definition, preserve its metadata and environment, and replace only the fields
 # controlled by this release. The response is validated before a routing command is offered.
-python3 - "$WORK/cur.json" "$IMAGE" "$PRIMARY_MODEL" "$FALLBACK_MODEL" "$ROUTINE_CREDENTIAL_VAULT_URI" "$ROUTINE_CREDENTIAL_CERTIFICATE_NAME" > "$WORK/body.json" <<'PY'
+python3 - "$WORK/cur.json" "$IMAGE" "$PRIMARY_MODEL" "$FALLBACK_MODEL" "$PROJECT_MODEL_BASE_URL" "$ROUTINE_CREDENTIAL_VAULT_URI" "$ROUTINE_CREDENTIAL_CERTIFICATE_NAME" > "$WORK/body.json" <<'PY'
 import json, sys
 cur = json.load(open(sys.argv[1])); d = cur["definition"]
 env = dict(d.get("environment_variables", {}) or {})
+for obsolete in (
+    "OwnerOboProofEnabled",
+    "OwnerOboSaasClientId",
+    "Connections__BotTokenServiceConnection__Settings__ClientId",
+    "Connections__BotTokenServiceConnection__Settings__AuthorityEndpoint",
+    "Connections__BotTokenServiceConnection__Settings__FederatedClientId",
+):
+    env.pop(obsolete, None)
 env["MODEL_DEPLOYMENT_NAME"] = sys.argv[3]
 env["FALLBACK_MODEL_DEPLOYMENT_NAME"] = sys.argv[4]
-if sys.argv[5] or sys.argv[6]:
-    if not (sys.argv[5] and sys.argv[6]):
+env["AZURE_FOUNDRY_BASE_URL"] = sys.argv[5]
+if sys.argv[6] or sys.argv[7]:
+    if not (sys.argv[6] and sys.argv[7]):
         raise SystemExit("Both ROUTINE_CREDENTIAL_VAULT_URI and ROUTINE_CREDENTIAL_CERTIFICATE_NAME are required")
-    env["RoutineCredentialVaultUri"] = sys.argv[5]
-    env["RoutineCredentialCertificateName"] = sys.argv[6]
+    env["RoutineCredentialVaultUri"] = sys.argv[6]
+    env["RoutineCredentialCertificateName"] = sys.argv[7]
 body = {
     "definition": {
         "kind": d.get("kind", "hosted"),
@@ -86,7 +129,9 @@ echo "==> created version $NEW"
 az rest --method GET --resource "$RES" \
   --url "${BASE}/agents/${AGENT}/versions/${NEW}?api-version=v1" -o json > "$WORK/newfull.json"
 
-python3 - "$WORK/cur.json" "$WORK/newfull.json" "$CUR" "$NEW" "$PRIMARY_MODEL" "$FALLBACK_MODEL" <<'PY'
+verify_graph_inheritance "$WORK/newfull.json" "new-v$NEW"
+
+python3 - "$WORK/cur.json" "$WORK/newfull.json" "$CUR" "$NEW" "$PRIMARY_MODEL" "$FALLBACK_MODEL" "$PROJECT_MODEL_BASE_URL" <<'PY'
 import json, sys
 a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2]))
 da, db = a["definition"], b["definition"]
@@ -101,13 +146,24 @@ print("  protocols  : " + ("same" if pa == pb else f"*** DIFFERS: {pa} -> {pb}")
 ma, mb = a.get("metadata"), b.get("metadata")
 print("  metadata   : " + ("same" if ma == mb else f"*** DIFFERS: {ma} -> {mb}") + f"  ({mb})")
 # Names and value-identity only. Values are secrets (IdentitySignKey among them) and are NEVER printed.
-missing, added = sorted(set(ea) - set(eb)), sorted(set(eb) - set(ea))
+expected_removed = {
+    "OwnerOboProofEnabled",
+    "OwnerOboSaasClientId",
+    "Connections__BotTokenServiceConnection__Settings__ClientId",
+    "Connections__BotTokenServiceConnection__Settings__AuthorityEndpoint",
+    "Connections__BotTokenServiceConnection__Settings__FederatedClientId",
+}
+all_missing = set(ea) - set(eb)
+removed = sorted(all_missing & expected_removed)
+missing = sorted(all_missing - expected_removed)
+added = sorted(set(eb) - set(ea))
 changed = sorted(k for k in set(ea) & set(eb) if ea[k] != eb[k])
 print(f"  env vars   : {len(ea)} -> {len(eb)}")
 if missing: print(f"     *** DROPPED (agent will break): {missing}")
+if removed: print(f"     removed obsolete owner-OBO proof settings: {removed}")
 if added:   print(f"     added   : {added}")
 if changed: print(f"     changed : {changed}   (names only; values not shown)")
-if not (missing or added or changed): print("     identical (names and values)")
+if not (missing or removed or added or changed): print("     identical (names and values)")
 print()
 
 # Reject incomplete definitions even if the API accepted the create request.
@@ -119,6 +175,8 @@ if eb.get("MODEL_DEPLOYMENT_NAME") != sys.argv[5]:
     problems.append("primary model environment variable was not applied")
 if eb.get("FALLBACK_MODEL_DEPLOYMENT_NAME") != sys.argv[6]:
     problems.append("fallback model environment variable was not applied")
+if eb.get("AZURE_FOUNDRY_BASE_URL") != sys.argv[7]:
+    problems.append("project model endpoint environment variable was not applied")
 if problems:
     sys.exit("ABORT: new version " + sys.argv[4] + " " + "; ".join(problems)
              + ". Do NOT route traffic to it.")

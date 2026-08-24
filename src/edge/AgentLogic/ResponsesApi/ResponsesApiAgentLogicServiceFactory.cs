@@ -9,60 +9,45 @@ using Microsoft.Agents.Builder;
 using Microsoft.Agents.Builder.App.UserAuth;
 
 /// <summary>
-/// Selects the edge implementation for an interactive Activity turn.
-///
-/// <para><b>HermesRouter is the supported Hermes runtime and the default.</b> The factory's
-/// name is historical: <see cref="ResponsesApiAgentLogicService"/> is retained only as a
-/// non-production compatibility/reference path for comparing the stock Microsoft Responses API
-/// flow and diagnosing platform identity or MCP discovery. It is not the main mode, is never
-/// selected implicitly, and is not expected to have feature parity with Hermes.</para>
+/// Factory for creating ResponsesApiAgentLogicService instances.
+/// Discovers MCP servers either from the Agent365 API or from a local ToolingManifest.json,
+/// controlled by the "McpDiscoverySource" config setting ("API" or "Manifest").
 /// </summary>
 public sealed class ResponsesApiAgentLogicServiceFactory(
     IConfiguration configuration,
     ILogger<ResponsesApiAgentLogicServiceFactory> logger,
-    AgentTokenHelper tokenHelper)
+    AgentTokenHelper tokenHelper,
+    RoutineBindingService routineBindings)
 {
     private static readonly HttpClient HttpClient = new();
 
     public async Task<IAgentLogicService> CreateAsync(AgentMetadata agent, ITurnContext turnContext, UserAuthorization userAuthorization)
     {
-        // MAIN PATH: HermesRouter forwards the turn to the Hermes gateway in this same Foundry
-        // container. Keep this as the default. In particular, do not change this to a
-        // loose "anything other than HermesRouter means ResponsesApi" fallback: a misspelled setting
-        // must fail loudly instead of silently replacing Hermes with the compatibility implementation.
+        // THE THIN EDGE (default). Foundry supplies identity, hosting and governance; the turn itself
+        // runs in the customer's own ACA sandbox behind sandbox-router. Returning here — before any
+        // token acquisition — is deliberate: everything below this line talks to Foundry's data plane
+        // (agentic-user token for MCP, MCP discovery, then the Responses API), which is precisely the
+        // work the thin-edge architecture moves off Foundry. Set AgentLogic=ResponsesApi to run the
+        // stock sample logic instead.
         var agentLogic = configuration["AgentLogic"] ?? "HermesRouter";
         if (agentLogic.Equals("HermesRouter", StringComparison.OrdinalIgnoreCase))
         {
             logger.LogInformation(
-                "Using main HermesRouter mode for agent {AgentId} (instance {InstanceId}); forwarding to the in-container Hermes gateway.",
+                "Using Hermes thin edge for agent {AgentId} (instance {InstanceId}); forwarding turn to sandbox-router.",
                 agent.AgentId, agent.AgentApplicationId);
-            return new HermesRouter.HermesRouterAgentLogicService(agent, configuration, logger, tokenHelper, userAuthorization);
+            return new HermesRouter.HermesRouterAgentLogicService(
+                agent, configuration, logger, tokenHelper, userAuthorization, routineBindings);
         }
 
-        if (!agentLogic.Equals("ResponsesApi", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException(
-                $"Unsupported AgentLogic value '{agentLogic}'. Use 'HermesRouter'. " +
-                "'ResponsesApi' is available only as an explicit non-production compatibility mode.");
-        }
-
-        // NON-PRODUCTION COMPATIBILITY PATH. This directly invokes the Foundry Responses API with
-        // discovered MCP servers. It bypasses the Hermes gateway, Hermes prompt/tool loop, sidecar,
-        // memory, and authority behavior. It exists for controlled diagnostics and comparison with
-        // Microsoft's stock sample flow; it is not a production fallback or an alternate Hermes mode.
-        logger.LogWarning(
-            "NON-PRODUCTION AgentLogic=ResponsesApi selected for agent {AgentId} (instance {InstanceId}). " +
-            "This compatibility path bypasses Hermes and does not provide Hermes runtime feature parity.",
-            agent.AgentId, agent.AgentApplicationId);
-
-        // Diagnostic-only identity metadata for comparing this stock-compatible path with the
-        // HermesRouter path. Do not treat this log as routine credential provisioning.
+        // LOGGING ONLY. These are the ids on a turn that DEMONSTRABLY works — the stock path that
+        // read the agent's mailbox. Every failure of the turn-less (routine) path came from guessing
+        // agentAppInstanceId; this prints the value Microsoft's own code uses, so config can be set
+        // from fact. Read it with :logstream. Do not change behaviour here.
         logger.LogWarning(
             "AGENTIC-IDS blueprint={Blueprint} instance={Instance} upn={Upn} tenant={Tenant} userId={UserId}",
             agent.AgentApplicationId, agent.AgentId, agent.EmailId, agent.TenantId, agent.UserId);
 
         // Acquire token for MCP servers
-        // Public production audience for the Microsoft Agent 365 Tools Gateway.
         var requestContext = new TokenRequestContext(["ea9ffc3e-8a23-4a7d-836d-234d7c7565c1/.default"]);
         var tokenCredential = new AgentTokenCredential(tokenHelper, agent);
         var accessToken = await tokenCredential.GetTokenAsync(requestContext, CancellationToken.None);

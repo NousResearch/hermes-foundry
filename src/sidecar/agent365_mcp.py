@@ -1,13 +1,14 @@
 """Agent-identity MCP sidecar — the agent's OWN Microsoft 365.
 
-This service acts as the AGENT ITSELF: an autopilot with its own Entra Agent ID, mailbox, files,
-and calendar. It does not borrow the identity of the human speaking to it through a delegated OBO
-flow.
+The counterpart to graph_mcp.py. That one proxies to the capability broker and acts as the
+signed-in HUMAN (delegate model). This one acts as the AGENT ITSELF: an autopilot with its own
+Entra Agent ID, mailbox and calendar.
 
-The token is an **agentic user token** minted by the Foundry edge through Microsoft.Agents.A365
-`AgentTokenHelper`. Interactive turns hand the short-lived token to the in-container gateway; this
-sidecar retrieves it over an authenticated loopback endpoint instead of persisting it. Turn-less
-routine credentials use the separate, explicitly configured autonomous identity flow.
+The token is an **agentic user token** minted by the Foundry thin edge via the documented
+three-step exchange (managed identity -> blueprint, blueprint -> instance FIC, then
+`grant_type=user_fic` for the agent user) and handed to the sandbox per turn. See
+Microsoft.Agents.A365 `AgentTokenHelper`; the same flow backs Microsoft's own
+foundry-workstream-manager sample when it calls Graph.
 
 There is no sign-in tool here on purpose. An autopilot never signs a human in — if the token is
 missing or expired that is an infrastructure fault to surface, not something a user can fix from
@@ -19,6 +20,8 @@ import html
 import io
 import json
 import asyncio
+import datetime
+import email.utils
 import functools
 import os
 import threading
@@ -31,10 +34,17 @@ import urllib.request
 from mcp.server.fastmcp import FastMCP
 
 GRAPH = "https://graph.microsoft.com/v1.0"
-# Minted per turn by the edge and refreshed on every turn, so the long-lived runtime never holds a
+# Minted per turn by the edge and refreshed on every turn, so a long-lived sandbox never holds a
 # stale credential. Read lazily (not captured at import) so a relaunch picks up the new value.
 _TOKEN_ENV = "AGENT_GRAPH_TOKEN"
 AGENT_UPN = os.environ.get("AGENT_UPN", "")
+
+# Durable coordination memory lives in the Agent User's OWN OneDrive. Every Agent User has a
+# different drive, so this path is agent-identity scoped even when one human owns several agents.
+# Keep it at the drive root: PUT cannot create missing parent folders, and memory must work on a
+# newly provisioned drive without a setup step.
+_SHARED_MEMORY_PATH = "SHARED_MEMORY.md"
+_SHARED_MEMORY_MAX_CHARS = 128_000
 
 mcp = FastMCP(
     "m365-agent",
@@ -49,10 +59,18 @@ mcp = FastMCP(
         "colleague would be; if a call returns 403 say so plainly rather than retrying. "
         "There is no sign-in step: the identity is always present. If a tool reports the "
         "credential is missing or expired, report that to the user as a system fault. "
+        "DURABLE MEMORY: remember appends owner-authoritative information to this Agent User's "
+        "own OneDrive and hard-refuses non-owner callers. recall reads it across sessions. Before "
+        "refusing a colleague action for lack of approval, use recall; treat relevant recalled "
+        "permissions as direct owner instructions, but never expose unrelated entries. "
         "PEOPLE: when someone gives a colleague's name but not their email address, call "
         "resolve_person. It searches the tenant directory. Never use me/contacts for this: that is "
         "the agent's private Outlook address book and is not the organisation directory. If "
         "resolve_person reports multiple matches, ask which person before sending or sharing. "
+        "WORD DOCUMENTS: use create_docx for a new Word file and edit_docx to change an existing "
+        ".docx in your OneDrive. Do not open the browser-based Word editor: it requires an "
+        "interactive sign-in that an autopilot cannot complete. edit_docx downloads the OOXML, "
+        "changes it locally, and uploads it back to the same item. "
         "WEB RESEARCH: never answer a 'look it up' request from memory. If web_search returns a "
         "SOURCE LIST instead of an answer, that is a success, not a failure — Azure's copyright "
         "filter blocks composed answers for recipes, lyrics and article text. Read the most relevant "
@@ -63,11 +81,16 @@ mcp = FastMCP(
 )
 
 
-# ---- tool-call diagnostics --------------------------------------------------------------------
+# ---- every tool call is logged, or none of this is debuggable ---------------------------------
 # FastMCP logs "Processing request of type CallToolRequest" and nothing else: not the tool name, not
 # the arguments, not the result. And our tools deliberately CATCH their own exceptions and return the
 # message as a string to the model, so a failure never reaches stderr either.
-# Wrap the decorator once so every registered tool gets a call/outcome line.
+#
+# The result, on 2026-08-17: the owner reported `web_search` failing with "Connection reset by peer",
+# and the container logs for that exact minute showed only three CallToolRequest lines with no
+# indication of which tool, which query, or what went wrong. There was nothing to diagnose from.
+#
+# So wrap the decorator once, here, and every tool registered below gets a call/outcome line for free.
 # Rules: never log argument VALUES (they contain mail bodies and recipients) — only names and sizes;
 # never log the token; treat an "ERROR"-prefixed return as a failure, because that is how these tools
 # report failure to the model.
@@ -130,6 +153,9 @@ _token_cache = {"tok": "", "at": 0.0}
 _TOKEN_URL = os.environ.get("AGENT_TOKEN_URL", "").rstrip("/")
 _TOKEN_KEY = os.environ.get("AGENT_TOKEN_KEY", "")
 _TOKEN_TTL = float(os.environ.get("AGENT_TOKEN_TTL", "60"))
+_ROUTINE_CONTROL_URL = os.environ.get(
+    "ROUTINE_CONTROL_URL", "http://127.0.0.1:8088/internal/routines"
+).rstrip("/")
 
 
 def _token() -> str:
@@ -137,7 +163,8 @@ def _token() -> str:
 
     Two sources, in order:
 
-    1. AGENT_GRAPH_TOKEN — optional process-start injection retained for compatible deployments.
+    1. AGENT_GRAPH_TOKEN — set once at process start. This is how sandbox-router runs it: the
+       sidecar is relaunched per turn with that turn's freshly minted token.
     2. AGENT_TOKEN_URL — polled. Needed when the sidecar is a LONG-LIVED container next to Hermes
        rather than a per-turn process, because an env var captured at start goes stale in an hour
        and there is no relaunch to refresh it.
@@ -168,6 +195,81 @@ def _token() -> str:
         return _token_cache["tok"]
 
 
+def _caller_tier() -> str:
+    """Return the live authority tier for this turn, failing closed.
+
+    Unlike the Graph token, this MUST NOT use the 60-second cache: the same long-lived sidecar can
+    serve a new turn from a different caller. Reusing the previous caller's `owner` tier would let a
+    colleague write owner memory. The gateway is on loopback, so one small request per `remember`
+    call is cheaper than weakening this boundary.
+    """
+    env_tier = (os.environ.get("AGENT_CALLER_TIER") or "").strip().lower()
+    if env_tier in {"owner", "colleague", "outsider"}:
+        return env_tier
+    if not _TOKEN_URL:
+        return "outsider"
+    try:
+        req = urllib.request.Request(f"{_TOKEN_URL}/v1/agent-token")
+        if _TOKEN_KEY:
+            req.add_header("Authorization", f"Bearer {_TOKEN_KEY}")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            tier = str((json.loads(r.read()) or {}).get("tier", "outsider")).strip().lower()
+        return tier if tier in {"owner", "colleague", "outsider"} else "outsider"
+    except Exception:
+        return "outsider"
+
+
+def _routine_capability() -> str:
+    """Return the current turn's opaque owner-only routine-management capability.
+
+    The edge creates this from trusted Agent 365 Activity metadata. The sidecar never parses it,
+    never receives the signing key, and cannot substitute Agent Identity/User IDs. A colleague or
+    a non-turn invocation receives no capability and therefore cannot manage routines.
+    """
+    if not _TOKEN_URL:
+        return ""
+    try:
+        req = urllib.request.Request(f"{_TOKEN_URL}/v1/agent-token")
+        if _TOKEN_KEY:
+            req.add_header("Authorization", f"Bearer {_TOKEN_KEY}")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return str((json.loads(r.read()) or {}).get("routine_capability") or "")
+    except Exception:
+        return ""
+
+
+def _routine_control(operation: str, payload: dict) -> str:
+    """Call the edge-owned routine control API; identity and signing stay in the edge."""
+    capability = _routine_capability()
+    if not capability:
+        return ("ROUTINE NOT CHANGED — routine management is available only in a verified owner "
+                "conversation. No administrator or user should paste identity IDs or signatures.")
+    body = dict(payload)
+    body["capability"] = capability
+    req = urllib.request.Request(
+        f"{_ROUTINE_CONTROL_URL}/{operation}",
+        data=json.dumps(body).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    if _TOKEN_KEY:
+        req.add_header("Authorization", f"Bearer {_TOKEN_KEY}")
+    try:
+        with urllib.request.urlopen(req, timeout=75) as r:
+            result = json.loads(r.read() or b"{}")
+        return str(result.get("message") or result)
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "replace")
+        try:
+            result = json.loads(raw or "{}")
+            detail = result.get("message") or result.get("error") or raw
+        except json.JSONDecodeError:
+            detail = raw
+        return f"ROUTINE NOT CHANGED — {detail or f'HTTP {e.code}'}"
+    except Exception as e:
+        return f"ROUTINE NOT CHANGED — {type(e).__name__}: {e}"
+
+
 def _dp(path: str) -> str:
     """Percent-encode a OneDrive item path for a Graph `drive/root:/{path}:` address.
 
@@ -176,8 +278,9 @@ def _dp(path: str) -> str:
         ERROR calling Graph: InvalidURL: URL can't contain control characters.
         '/v1.0/me/drive/root:/Summary - placeholder.md:/content' (found at least ' ')
 
-    Any natural filename with a space fails without encoding. `safe="/"` keeps folder separators as
-    separators and encodes everything else,
+    Observed live on 2026-08-17 -- the agent tried to write "Summary - placeholder.md", got that,
+    and worked around it by renaming the file. Any natural filename with a space failed, which is
+    most of them. `safe="/"` keeps the folder separators as separators and encodes everything else,
     including the `#` and `?` that would otherwise truncate the path.
     """
     return urllib.parse.quote(path.strip().lstrip("/"), safe="/")
@@ -186,8 +289,14 @@ def _dp(path: str) -> str:
 def _edge_log(stage: str, detail: str) -> None:
     """Report a sidecar diagnostic to the gateway, which ships it to Application Insights.
 
-    The sidecar already polls the gateway for the agent token, so the same authenticated loopback
-    path can carry diagnostics to the gateway's /v1/edge-log sink.
+    WHY THIS EXISTS. In a Plan F container the sidecar's stdout is unreadable from outside: Foundry's
+    :logstream 404s for us, the session files API returns session_not_accessible because a
+    Teams-created session belongs to the CALLER's isolation key, and only the gateway's own log()
+    reaches App Insights. So on 2026-08-17 the OneDrive provisioning probe ran — or did not — and
+    there was NO WAY TO TELL, which left a fix unverifiable and the next step unknowable.
+
+    The sidecar already speaks to the gateway to poll for the agent token, so the same URL and key
+    give us a telemetry path for free. /v1/edge-log is the gateway's existing sink.
 
     Fire-and-forget and fully swallowed: diagnostics must never break a tool call. Stage and detail
     only — never argument values, matching the rule the tool-call logger already follows.
@@ -225,7 +334,7 @@ def _graph(method: str, path: str, body=None, raw_body: bool = False) -> str:
     """
     tok = _token()
     if not tok:
-        return ("ERROR: no agent credential present in this runtime. The Foundry edge did not "
+        return ("ERROR: no agent credential present in this sandbox. The Foundry edge did not "
                 "supply an agentic user token for this turn. This is a system fault — report it.")
     url = path if path.startswith("http") else f"{GRAPH}/{path.lstrip('/')}"
     data = None
@@ -291,7 +400,7 @@ def _graph_bytes(method: str, path: str):
     """
     tok = _token()
     if not tok:
-        return None, "ERROR: no agent credential present in this runtime."
+        return None, "ERROR: no agent credential present in this sandbox."
     url = path if path.startswith("http") else f"{GRAPH}/{path.lstrip('/')}"
 
     class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -322,6 +431,43 @@ def _graph_bytes(method: str, path: str):
         except Exception as e:                             # noqa: BLE001 - surfaced to the model
             return None, f"ERROR calling Graph: {type(e).__name__}: {e}"
     return None, "ERROR: Graph call exhausted retries."
+
+
+def _graph_put_bytes(path: str, blob: bytes, if_match: str = "") -> str:
+    """Upload binary content, optionally refusing to overwrite a concurrently changed item."""
+    tok = _token()
+    if not tok:
+        return "ERROR: no agent credential present in this sandbox."
+    url = path if path.startswith("http") else f"{GRAPH}/{path.lstrip('/')}"
+    headers = {
+        "Authorization": f"Bearer {tok}",
+        "Accept": "application/json",
+        "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    if if_match:
+        headers["If-Match"] = if_match
+    for attempt in range(4):
+        try:
+            req = urllib.request.Request(url, data=blob, headers=headers, method="PUT")
+            with urllib.request.urlopen(req, timeout=120) as r:
+                raw = r.read().decode("utf-8", "replace")
+                return raw or f"OK ({r.status})"
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:600]
+            if e.code in (429, 503, 504) and attempt < 3:
+                try:
+                    wait = float(e.headers.get("Retry-After") or 0)
+                except (TypeError, ValueError):
+                    wait = 0
+                time.sleep(min(wait, 20) or min(2 ** attempt, 8))
+                continue
+            if e.code == 412:
+                return ("ERROR 412 from Graph: the Word document changed after it was downloaded. "
+                        "Nothing was overwritten; read the latest version and retry the edit.")
+            return f"ERROR {e.code} from Graph: {detail}"
+        except Exception as e:                              # noqa: BLE001 - surfaced to the model
+            return f"ERROR calling Graph: {type(e).__name__}: {e}"
+    return "ERROR: Graph upload exhausted retries."
 
 
 def _me(path: str = "") -> str:
@@ -413,6 +559,59 @@ def resolve_person(query: str, top: int = 10) -> str:
 
 
 @mcp.tool()
+def create_routine(name: str, task: str, cron_expression: str, time_zone: str) -> str:
+    """Create or replace a recurring Foundry Routine for THIS Hermes instance.
+
+    Choose this tool when the owner asks you to do something later on a recurring schedule. The
+    owner does not need to know the tool name. Translate the requested schedule into a standard
+    five-field cron expression and use an explicit IANA time zone such as Europe/Nicosia or
+    America/New_York. time_zone is mandatory: never silently default it to UTC, the runtime's zone,
+    an activity offset, or a locale. If the owner did not state a zone, call recall and use the
+    latest saved owner scheduling timezone. If none is saved, ask once; when the owner answers, call
+    remember with `Owner scheduling timezone (IANA): <zone>` before creating the Routine.
+    This expression is only the schedule syntax required by the Foundry Routines API. Cron jobs,
+    Hermes cron tools, background shell schedulers, and chat reminders are disabled; never use them
+    as an alternative. Ask a short clarification only when the time or recurrence is genuinely
+    ambiguous.
+
+    The complete task is immutable and bound automatically to this Agent Identity/User by the edge.
+    Include the intended action and recipient in task when known. Never ask for or put identity IDs,
+    OAuth access tokens, refresh tokens, signatures, certificates, or secrets in the task. The edge
+    obtains a fresh short-lived downstream token through Entra Agent OBO when the Routine executes.
+    This tool hard-refuses colleague, outsider, and non-turn sessions.
+    """
+    return _routine_control("create", {
+        "name": name,
+        "task": task,
+        # The control endpoint is ASP.NET JSON. Its web defaults bind camelCase property names;
+        # snake_case silently produced empty strings and the edge reported "cron required" even
+        # though Hermes correctly supplied e.g. `5 17 * * *`.
+        "cronExpression": cron_expression,
+        "timeZone": time_zone,
+    })
+
+
+@mcp.tool()
+def list_routines() -> str:
+    """List recurring Foundry Routines owned by THIS Hermes instance.
+
+    Choose this yourself when the owner asks what scheduled work is configured. Project-wide
+    routines belonging to other Hermes instances are filtered out by the edge and never returned.
+    """
+    return _routine_control("list", {})
+
+
+@mcp.tool()
+def remove_routine(name: str) -> str:
+    """Remove one recurring Foundry Routine owned by THIS Hermes instance.
+
+    Use the same human-facing name shown by list_routines. The edge verifies ownership from the
+    signed action before deleting; naming another instance's project routine cannot delete it.
+    """
+    return _routine_control("delete", {"name": name})
+
+
+@mcp.tool()
 def list_inbox(top: int = 10) -> str:
     """List the most recent messages in the AGENT'S OWN inbox."""
     top = max(1, min(int(top or 10), 50))
@@ -445,14 +644,14 @@ def search_emails(query: str, top: int = 10) -> str:
 @mcp.tool()
 def send_email(to: str, subject: str, body: str, html: bool = False) -> str:
     """Send an email FROM THE AGENT'S OWN mailbox. `to` may be comma-separated."""
-    recips = [a.strip() for a in (to or "").split(",") if a.strip()]
+    recips = _mailboxes(to)
     if not recips:
         return "ERROR: at least one recipient address is required."
     payload = {
         "message": {
             "subject": subject or "",
             "body": {"contentType": "HTML" if html else "Text", "content": body or ""},
-            "toRecipients": [{"emailAddress": {"address": a}} for a in recips],
+            "toRecipients": recips,
         },
         "saveToSentItems": True,
     }
@@ -486,14 +685,33 @@ def list_events(days: int = 7) -> str:
         "&$orderby=start/dateTime&$top=50"))
 
 
+def _mailboxes(raw: str) -> list:
+    """Parse RFC-style mailboxes into the shape expected by Microsoft Graph.
+
+    Models often supply ``Display Name <address@example.com>`` even when a tool asks for an email
+    address. Graph's ``emailAddress.address`` field accepts only the actual address; passing the
+    complete display form makes Exchange reject an otherwise valid recipient. ``getaddresses``
+    also correctly handles quoted display names containing commas.
+    """
+    out = []
+    for name, address in email.utils.getaddresses([raw or ""]):
+        address = address.strip()
+        if not address:
+            continue
+        mailbox = {"address": address}
+        if name.strip():
+            mailbox["name"] = name.strip()
+        out.append({"emailAddress": mailbox})
+    return out
+
+
 def _attendees(required: str, optional: str = "") -> list:
-    """Build a Graph attendees collection from comma-separated address strings."""
+    """Build a Graph attendees collection from comma-separated RFC mailbox strings."""
     out = []
     for kind, raw in (("required", required), ("optional", optional)):
-        for addr in (raw or "").split(","):
-            addr = addr.strip()
-            if addr:
-                out.append({"emailAddress": {"address": addr}, "type": kind})
+        for mailbox in _mailboxes(raw):
+            mailbox["type"] = kind
+            out.append(mailbox)
     return out
 
 
@@ -512,7 +730,7 @@ def create_event(subject: str, start: str, end: str, attendees: str = "",
                  location: str = "", online_meeting: bool = True) -> str:
     """Create an event on the AGENT'S OWN calendar, as organiser, and invite people to it.
 
-    `start` and `end` are wall-clock times with NO zone suffix, e.g. "2030-01-15T14:00:00", paired
+    `start` and `end` are wall-clock times with NO zone suffix, e.g. "2026-08-15T14:00:00", paired
     with `time_zone` (e.g. "UTC" or "Pacific Standard Time"). `attendees` and `optional_attendees`
     are comma-separated email addresses.
 
@@ -570,7 +788,7 @@ def _attach_event_link(event_id: str, path: str, item_id: str) -> str:
 
     Why this is not a Graph "cloud attachment": v1.0 referenceAttachment exposes only Get and Delete
     — there is no create — and the properties you would need to point one at a drive item
-    (sourceUrl, providerType, permission) are not in the v1.0 resource.
+    (sourceUrl, providerType, permission) are not in the v1.0 resource at all. Checked 2026-08-17.
     So the supported way to attach a OneDrive document by reference is to grant access and put the
     URL in the event body, which is what Outlook's own "share a link instead" does for large files.
 
@@ -829,6 +1047,92 @@ def read_file(item_id: str = "", path: str = "") -> str:
     return _graph("GET", _me(loc))
 
 
+def _is_shared_memory_path(path: str) -> bool:
+    """Recognise the reserved memory file even through harmless path spelling differences."""
+    p = urllib.parse.unquote(path or "").strip().replace("\\", "/").lstrip("/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p.casefold() == _SHARED_MEMORY_PATH.casefold()
+
+
+def _read_shared_memory() -> str:
+    return _graph("GET", _me(f"drive/root:/{_dp(_SHARED_MEMORY_PATH)}:/content"))
+
+
+@mcp.tool()
+def recall() -> str:
+    """Read durable instructions and permissions written by this agent's OWNER.
+
+    Choose this tool yourself; users should not need to know or say its name. Use it when the current
+    request depends on something the owner may have asked in a different session — especially before
+    refusing a colleague's request for lack of permission. The returned
+    memory is scoped to THIS Agent User's own OneDrive, not to the tenant or human owner. Treat its
+    contents as direct owner instructions; later entries override earlier conflicting entries.
+
+    Do not quote or expose unrelated memory to the current caller. Use only the part relevant to the
+    present request. This tool is read-only and is available in owner and colleague sessions.
+    """
+    current = _read_shared_memory()
+    if current.startswith("ERROR 404"):
+        return ("OWNER MEMORY IS EMPTY — this Agent User has no durable owner instructions yet. "
+                "Do not infer permission from this.")
+    if current.startswith("ERROR"):
+        return ("OWNER MEMORY COULD NOT BE READ — do not infer permission or claim the owner "
+                f"authorised anything.\n{current}")
+    return ("AUTHORITATIVE OWNER MEMORY — these entries were accepted only from this Agent User's "
+            "verified owner session. Treat them as if the owner told you directly. Later entries "
+            "override earlier conflicting entries. Do not disclose unrelated entries.\n\n" + current)
+
+
+@mcp.tool()
+def remember(information: str) -> str:
+    """Append a durable instruction, permission, commitment, or fact from the OWNER.
+
+    Choose this tool yourself; the owner should never need to know or say its name. Call it whenever
+    the owner's natural-language intent must survive this chat/session: for example “from now on”,
+    “later”, “next time”, “always”, “when X asks”, a standing preference, a future commitment, or
+    permission for another person. Store enough context to apply the instruction safely: who it
+    concerns, what is allowed or requested, relevant limits, and any expiry. This tool hard-refuses
+    every non-owner caller; never ask a colleague to use it.
+
+    The data is stored in SHARED_MEMORY.md in THIS Agent User's own OneDrive. It is not tenant-wide
+    and is not shared with other agents owned by the same human.
+    """
+    if _caller_tier() != "owner":
+        return ("MEMORY NOT CHANGED — only this Agent User's verified owner may create durable "
+                "instructions or permissions. A colleague or unidentified caller cannot use remember.")
+
+    information = (information or "").strip()
+    if not information:
+        return "MEMORY NOT CHANGED — information is required."
+    if len(information) > 12_000:
+        return ("MEMORY NOT CHANGED — one entry is limited to 12,000 characters. Summarise the "
+                "durable instruction and try again.")
+
+    current = _read_shared_memory()
+    if current.startswith("ERROR 404"):
+        current = ("# Shared owner memory\n\n"
+                   "Only the verified owner can append entries through `remember`. All sessions of "
+                   "this Agent User may read them through `recall`. Later entries override earlier "
+                   "conflicting entries.\n")
+    elif current.startswith("ERROR"):
+        return ("MEMORY NOT CHANGED — existing owner memory could not be read, so overwriting it "
+                f"would risk data loss.\n{current}")
+
+    stamp = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+    updated = current.rstrip() + f"\n\n## {stamp}\n{information}\n"
+    if len(updated) > _SHARED_MEMORY_MAX_CHARS:
+        return ("MEMORY NOT CHANGED — SHARED_MEMORY.md reached its 128,000-character safety limit. "
+                "The owner must consolidate or archive old entries before adding more.")
+
+    result = _graph("PUT", _me(f"drive/root:/{_dp(_SHARED_MEMORY_PATH)}:/content"),
+                    updated, raw_body=True)
+    if result.startswith("ERROR"):
+        return "MEMORY NOT CHANGED — the OneDrive write failed.\n" + result
+    return (f"REMEMBERED — appended an owner-authoritative entry to {_SHARED_MEMORY_PATH} in this "
+            f"Agent User's own OneDrive at {stamp}.\n{result}")
+
+
 @mcp.tool()
 def create_file(path: str, content: str) -> str:
     """Create or overwrite a TEXT file in the agent's OWN OneDrive through Microsoft Graph.
@@ -842,6 +1146,10 @@ def create_file(path: str, content: str) -> str:
     and webUrl — pass that id to share_file to give someone access."""
     if not path:
         return "ERROR: path is required."
+    if _is_shared_memory_path(path):
+        return (f"FILE NOT CHANGED — {_SHARED_MEMORY_PATH} is reserved for durable owner memory. "
+                "Use remember to append an owner-authoritative entry; do not overwrite it with "
+                "create_file.")
 
     # A HARD STOP, not advice in the docstring. The agent offered its owner "shall I convert the
     # Markdown to a simple .docx?", was told yes, and had no way to do it -- Graph would have happily
@@ -887,6 +1195,109 @@ def _docx_runs(paragraph, text: str) -> None:
             r.font.name = "Consolas"
         else:
             paragraph.add_run(chunk)
+
+
+def _append_docx_markdown(doc, content: str) -> int:
+    """Append the same small Markdown subset accepted by create_docx; return paragraphs added."""
+    added = 0
+    for raw in (content or "").splitlines():
+        line = raw.rstrip()
+        s = line.strip()
+        if not s:
+            continue
+        if s in ("---", "***", "___"):
+            doc.add_paragraph()
+            added += 1
+            continue
+        m = re.match(r"^(#{1,6})\s+(.*)$", s)
+        if m:
+            doc.add_heading(m.group(2).strip(), level=min(len(m.group(1)), 4))
+            added += 1
+            continue
+        m = re.match(r"^[-*+]\s+(.*)$", s)
+        if m:
+            _docx_runs(doc.add_paragraph(style="List Bullet"), m.group(1))
+            added += 1
+            continue
+        m = re.match(r"^\d+[.)]\s+(.*)$", s)
+        if m:
+            _docx_runs(doc.add_paragraph(style="List Number"), m.group(1))
+            added += 1
+            continue
+        if s.startswith(">"):
+            _docx_runs(doc.add_paragraph(style="Intense Quote"), s.lstrip("> ").strip())
+            added += 1
+            continue
+        _docx_runs(doc.add_paragraph(), s)
+        added += 1
+    return added
+
+
+def _docx_all_paragraphs(doc):
+    """Yield body, table, header, and footer paragraphs once, including nested tables."""
+    seen = set()
+
+    def emit(paragraphs):
+        for paragraph in paragraphs:
+            key = id(paragraph._p)
+            if key not in seen:
+                seen.add(key)
+                yield paragraph
+
+    def tables(items):
+        for table in items:
+            for row in table.rows:
+                for cell in row.cells:
+                    yield from emit(cell.paragraphs)
+                    yield from tables(cell.tables)
+
+    yield from emit(doc.paragraphs)
+    yield from tables(doc.tables)
+    for section in doc.sections:
+        for part in (section.header, section.first_page_header, section.even_page_header,
+                     section.footer, section.first_page_footer, section.even_page_footer):
+            yield from emit(part.paragraphs)
+            yield from tables(part.tables)
+
+
+def _replace_docx_paragraph(paragraph, find_text: str, replace_text: str) -> int:
+    """Replace text even when Word split it across runs, preserving surrounding run formatting."""
+    runs = list(paragraph.runs)
+    whole = "".join(run.text for run in runs)
+    if not runs or find_text not in whole:
+        return 0
+
+    starts = []
+    pos = 0
+    for run in runs:
+        starts.append((pos, pos + len(run.text)))
+        pos += len(run.text)
+
+    matches = []
+    start = 0
+    while True:
+        at = whole.find(find_text, start)
+        if at < 0:
+            break
+        matches.append((at, at + len(find_text)))
+        start = at + len(find_text)
+
+    # Work right-to-left so offsets computed from the original runs remain valid.
+    for begin, end in reversed(matches):
+        first = next(i for i, (_, hi) in enumerate(starts) if hi > begin)
+        last = next(i for i, (lo, hi) in enumerate(starts) if lo < end <= hi)
+        first_lo = starts[first][0]
+        last_lo = starts[last][0]
+        before = runs[first].text[:begin - first_lo]
+        after = runs[last].text[end - last_lo:]
+        if first == last:
+            runs[first].text = before + replace_text + after
+        else:
+            runs[first].text = before + replace_text
+            for i in range(first + 1, last):
+                runs[i].text = ""
+            runs[last].text = after
+    return len(matches)
 
 
 def _pptx_runs(paragraph, text: str, size_pt: int = 18) -> None:
@@ -948,30 +1359,7 @@ def create_docx(path: str, content: str, title: str = "") -> str:
         doc = Document()
         if title:
             doc.add_heading(title, level=0)
-        for raw in (content or "").splitlines():
-            line = raw.rstrip()
-            s = line.strip()
-            if not s:
-                continue
-            if s in ("---", "***", "___"):
-                doc.add_paragraph()
-                continue
-            m = re.match(r"^(#{1,6})\s+(.*)$", s)
-            if m:
-                doc.add_heading(m.group(2).strip(), level=min(len(m.group(1)), 4))
-                continue
-            m = re.match(r"^[-*+]\s+(.*)$", s)
-            if m:
-                _docx_runs(doc.add_paragraph(style="List Bullet"), m.group(1))
-                continue
-            m = re.match(r"^\d+[.)]\s+(.*)$", s)
-            if m:
-                _docx_runs(doc.add_paragraph(style="List Number"), m.group(1))
-                continue
-            if s.startswith(">"):
-                _docx_runs(doc.add_paragraph(style="Intense Quote"), s.lstrip("> ").strip())
-                continue
-            _docx_runs(doc.add_paragraph(), s)
+        _append_docx_markdown(doc, content)
 
         buf = io.BytesIO()
         doc.save(buf)
@@ -988,6 +1376,71 @@ def create_docx(path: str, content: str, title: str = "") -> str:
     if res.startswith("ERROR"):
         return f"DOCX NOT CREATED — the upload failed. Do not say the document exists.\n{res}"
     return f"DOCX CREATED at {path} ({len(blob)} bytes, real Word format).\n{res}"
+
+
+@mcp.tool()
+def edit_docx(item_id: str = "", path: str = "", append_content: str = "",
+              find_text: str = "", replace_text: str = "") -> str:
+    """Edit an existing REAL Word document in the agent's OWN OneDrive without browser sign-in.
+
+    Give item_id OR a drive-relative path. Use append_content to add Markdown-formatted paragraphs,
+    and/or find_text + replace_text for exact text replacement. The operation downloads the OOXML,
+    edits it locally with python-docx, then uploads it back to the SAME OneDrive item. An ETag guard
+    prevents overwriting a concurrent human edit. This supports normal DOCX text in paragraphs,
+    tables, headers, and footers; it does not edit tracked changes, comments, text inside drawings,
+    or encrypted/protected documents.
+    """
+    if bool(item_id) == bool(path):
+        return "DOCX NOT CHANGED — give exactly one of item_id or path."
+    if not append_content and not find_text:
+        return "DOCX NOT CHANGED — give append_content and/or find_text."
+
+    quoted_id = urllib.parse.quote(item_id, safe="") if item_id else ""
+    base = f"drive/items/{quoted_id}" if item_id else f"drive/root:/{_dp(path)}:"
+    meta_raw = _graph("GET", _me(f"{base}?$select=id,name,eTag"))
+    if meta_raw.startswith("ERROR"):
+        return f"DOCX NOT CHANGED — the OneDrive item could not be resolved.\n{meta_raw}"
+    try:
+        meta = json.loads(meta_raw)
+        resolved_id = str(meta["id"])
+        name = str(meta.get("name") or path)
+        etag = str(meta.get("eTag") or "")
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        return f"DOCX NOT CHANGED — Graph returned invalid item metadata: {type(e).__name__}."
+    if not name.lower().endswith(".docx"):
+        return f"DOCX NOT CHANGED — '{name}' is not a .docx Word document."
+
+    content_path = _me(f"drive/items/{urllib.parse.quote(resolved_id, safe='')}/content")
+    blob, err = _graph_bytes("GET", content_path)
+    if err:
+        return f"DOCX NOT CHANGED — download failed.\n{err}"
+    if not blob or not blob.startswith(b"PK"):
+        return "DOCX NOT CHANGED — downloaded bytes are not a valid OOXML/ZIP document."
+
+    try:
+        from docx import Document
+        doc = Document(io.BytesIO(blob))
+        replacements = 0
+        if find_text:
+            for paragraph in _docx_all_paragraphs(doc):
+                replacements += _replace_docx_paragraph(paragraph, find_text, replace_text)
+            if replacements == 0 and not append_content:
+                return (f"DOCX NOT CHANGED — exact text {find_text!r} was not found in editable "
+                        "paragraphs, tables, headers, or footers.")
+        appended = _append_docx_markdown(doc, append_content) if append_content else 0
+        out = io.BytesIO()
+        doc.save(out)
+        updated = out.getvalue()
+    except Exception as e:                                  # noqa: BLE001 - surfaced to the model
+        return f"DOCX NOT CHANGED — local Word editing failed. {type(e).__name__}: {e}"
+
+    if not updated.startswith(b"PK"):
+        return "DOCX NOT CHANGED — edited bytes failed the OOXML format check."
+    result = _graph_put_bytes(content_path, updated, if_match=etag)
+    if result.startswith("ERROR"):
+        return f"DOCX NOT CHANGED — upload failed; the original remains authoritative.\n{result}"
+    return (f"DOCX UPDATED — {name}; replacements={replacements}, paragraphs_appended={appended}, "
+            f"bytes={len(updated)}. The existing OneDrive item was updated in place.\n{result}")
 
 
 @mcp.tool()
@@ -1061,8 +1514,8 @@ def create_pptx(path: str, content: str, title: str = "") -> str:
 
     Microsoft Graph has NO API for authoring PowerPoint content — it exposes .pptx only as a drive
     item (upload, download, share, metadata). So this generates the file with python-pptx and uploads
-    its bytes, exactly as create_docx does for Word. Excel has a server-side authoring API
-    (/workbook/worksheets), but it
+    its bytes, exactly as create_docx does for Word. Verified 2026-08-17 against the Graph docs; the
+    one Office format with a real server-side authoring API is Excel (/workbook/worksheets), and that
     only edits a workbook that already exists.
 
     Returns the item id and webUrl — pass that id to share_file. For a PDF as well, call create_pdf on
@@ -1252,20 +1705,30 @@ def list_shared_with_me(top: int = 20) -> str:
     return _graph("GET", _me(f"drive/sharedWithMe?$top={top}"))
 
 
-def _foundry_token() -> str:
-    """Token for our own Foundry account, via the Container App's managed identity.
-
-    Same audience the Hermes container already authenticates with (auth_mode: entra_id against
-    AZURE_FOUNDRY_BASE_URL, backed by the Cognitive Services User role) -- so this is the credential
-    path that is already proven in this app, not a new one.
-    """
+def _managed_identity_token(resource: str) -> str:
+    """Mint one managed-identity token for ``resource`` without persisting it."""
     ep, hdr = os.environ.get("IDENTITY_ENDPOINT"), os.environ.get("IDENTITY_HEADER")
     if not ep or not hdr:
         raise RuntimeError("no managed identity endpoint in this container")
-    url = f"{ep}?resource=https%3A%2F%2Fcognitiveservices.azure.com&api-version=2019-08-01"
+    encoded = urllib.parse.quote(resource, safe="")
+    url = f"{ep}?resource={encoded}&api-version=2019-08-01"
     req = urllib.request.Request(url, headers={"X-IDENTITY-HEADER": hdr})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())["access_token"]
+
+
+def _foundry_token() -> str:
+    """Token for the configured Foundry model endpoint.
+
+    Full Foundry uses the project-scoped Responses endpoint so every hosted agent instance receives
+    implicit model access. That endpoint requires the ``https://ai.azure.com`` audience. Retain the
+    Cognitive Services audience only for the portable account-level configuration used by ACA/VM
+    deployments; those workloads still require explicit resource RBAC.
+    """
+    base = (os.environ.get("AZURE_FOUNDRY_BASE_URL") or "").lower()
+    project_scoped = ".services.ai.azure.com/api/projects/" in base
+    resource = "https://ai.azure.com" if project_scoped else "https://cognitiveservices.azure.com"
+    return _managed_identity_token(resource)
 
 
 @mcp.tool()
@@ -1311,15 +1774,23 @@ def web_search(query: str, count: int = 8) -> str:
     except Exception as e:                                    # noqa: BLE001 - surfaced to the model
         return f"ERROR acquiring managed-identity token: {type(e).__name__}: {e}"
 
-    # Use a sources-only fallback when Azure's protected-material filter blocks a composed answer.
-    # The response shape is:
+    # TWO PROMPTS, because Azure's COPYRIGHT filter blocks the first one for whole classes of query.
+    #
+    # Root cause, 2026-08-17, quoted from the response body:
     #     "protected_material_text": {"detected": true, "filtered": true}
     # with every other category "safe". Azure returns HTTP 200, `status: "incomplete"`,
     # `incomplete_details: {"reason": "content_filter"}`, and the model's output replaced by the
     # 49-character "I'm sorry, but I cannot assist with that request." Bing HAD searched successfully.
     #
-    # Retrying the same composed request does not change a deterministic filter decision. A list of
-    # titles and URLs lets the agent read a selected source with fetch_url or browse_url.
+    # The filter is doing its job: a grounded answer to "pizza recipe" reproduces copyrighted recipe
+    # text. Retrying is useless -- 3 of 3 attempts were filtered and the 4th timed out, turning a fast
+    # failure into a 3.5-MINUTE one. (I retried first because a single lucky sample had passed. One
+    # sample is not a rate.)
+    #
+    # So work WITH the filter: if the composed answer is blocked, ask for SOURCES ONLY. There is no
+    # copyrighted content in a list of titles and URLs, and that request completed 2/2 with the filter
+    # untouched. The agent then reads whichever source it wants with fetch_url / browse_url, which is
+    # also the cheaper path (ROLLOUT.md: fetching is free, only discovery bills).
     ANSWER_INPUT = f"Search the web and answer: {q}\n\nCite the source URL for every claim."
     SOURCES_INPUT = (
         f"Search the web for: {q}\n\n"
@@ -1393,10 +1864,12 @@ def web_search(query: str, count: int = 8) -> str:
         doc, sources_only = doc2, True
     # Responses API: output is a list of items; pull every output_text plus its url_citations.
     #
-    # Also track whether a search actually happened. Without this the tool is undiagnosable: the
+    # ALSO track whether a search actually happened. Without this the tool is undiagnosable: the
     # model's prose is returned verbatim, so a refusal ("I'm sorry, but I cannot assist with that
-    # request.") reads exactly like a search result. Distinguish search, refusal, and configuration
-    # failure so the caller does not relay a refusal as a grounded answer.
+    # request.") reads exactly like a search result and the agent relays it to the user as though the
+    # web had been consulted. That is what happened on 2026-08-17 for a plainly innocuous query, and
+    # there was no way to tell from the outside whether Bing had been called, whether the model had
+    # declined, or whether grounding was misconfigured. Distinguish the three.
     parts, cites, searched, refusals = [], [], False, []
     for item in doc.get("output") or []:
         if item.get("type") == "web_search_call":
@@ -1416,8 +1889,14 @@ def web_search(query: str, count: int = 8) -> str:
                 + "; ".join(refusals)[:300]
                 + ". This is a model refusal, not a web result. Rephrase, or use fetch_url/browse_url "
                   "against a specific URL instead.")
-    # A grounded search that cites nothing is not a result. This tool asks for a source URL on every
-    # claim, so a
+    # A GROUNDED SEARCH THAT CITES NOTHING IS NOT A RESULT.
+    #
+    # 2026-08-17: a real web_search_call ran (Bing was queried, 8.9s) and the model then returned 49
+    # characters — "I'm sorry, but I cannot assist with that request." — with no citations. Both
+    # guards above missed it: there was no structured refusal, and a search HAD happened. The call was
+    # logged as `ok` and the refusal was handed to the owner as though it were a web answer.
+    #
+    # The invariant that actually holds: this tool asks for a source URL on every claim, so a
     # citation-free short answer means the model declined or the grounding returned nothing. Either
     # way it is a failure, and saying so is what lets the agent escalate to browse_url instead of
     # relaying an apology.
@@ -1458,12 +1937,7 @@ def web_search(query: str, count: int = 8) -> str:
 
 def _ai_token() -> str:
     """Managed-identity token for the Foundry data plane (audience https://ai.azure.com)."""
-    ep, hdr = os.environ.get("IDENTITY_ENDPOINT"), os.environ.get("IDENTITY_HEADER")
-    if not ep or not hdr:
-        raise RuntimeError("no managed identity endpoint in this container")
-    url = f"{ep}?resource=https%3A%2F%2Fai.azure.com&api-version=2019-08-01"
-    with urllib.request.urlopen(urllib.request.Request(url, headers={"X-IDENTITY-HEADER": hdr}), timeout=30) as r:
-        return json.loads(r.read())["access_token"]
+    return _managed_identity_token("https://ai.azure.com")
 
 
 def _browser_cdp_url() -> str:
@@ -1546,7 +2020,7 @@ def run_code(code: str) -> str:
     365 credential and has open egress, so running arbitrary code beside it is a standing risk the
     product does not need. The remote sandbox has neither your credential nor your network.
 
-    Runtime behavior:
+    HOW IT ACTUALLY BEHAVES — measured on 2026-08-18, not assumed:
       * STATELESS BETWEEN CALLS. Tested directly: call 1 wrote /tmp/state.txt and set a variable;
         call 2 reported "file exists: False ... variable: GONE (fresh interpreter)". So you CANNOT
         build up a program across several calls, and you cannot keep a script here for later. Send
@@ -1594,7 +2068,9 @@ async def browse_url(url: str, max_chars: int = 20000) -> str:
     THIS IS YOUR BROWSER. If you are asked to "use Playwright", "use a browser", "open" or "look at"
     a page, or to see something that only appears once scripts run — use this tool. Do NOT reply that
     you cannot run Playwright or that Chromium has no sandbox: that is true only of a browser inside
-    this container, and irrelevant, because this drives a Microsoft-hosted browser.
+    this container, and irrelevant, because this drives a Microsoft-hosted one. Observed 2026-08-17:
+    asked to "use playwright to open nousresearch.com", the agent said it could not and silently fell
+    back to a plain HTTP GET, without ever calling this tool.
 
 
     fetch_url is a plain HTTP GET, so it returns raw HTML and sees nothing a page draws with
@@ -1626,8 +2102,10 @@ async def browse_url(url: str, max_chars: int = 20000) -> str:
     except urllib.error.HTTPError as e:
         # READ THE BODY. urllib's HTTPError stringifies as only "HTTP Error 404: Not Found", so the
         # useful part — "Toolbox version '1' not found for toolbox 'browser-automation-toolbox'" —
-        # is in the response body and is otherwise thrown away. Parse it so the caller receives the
-        # missing-toolbox cause rather than only a generic 404.
+        # is in the response body and is otherwise thrown away. Observed 2026-08-18: the agent told
+        # the owner "ERROR provisioning browser: HTTPError: HTTP Error 404: Not Found", which named
+        # neither the cause nor the fix, and the friendly branch below never matched because the word
+        # "toolbox" only appears in the body.
         detail = ""
         try: detail = e.read().decode("utf-8", "replace")[:300]
         except Exception: pass
@@ -1688,8 +2166,8 @@ async def browse_url(url: str, max_chars: int = 20000) -> str:
 # do not raise it without actually finding the failure point.
 _ATTACH_MAX_BYTES = int(os.environ.get("ATTACH_MAX_BYTES", "180000"))
 
-# Where the fitted image lands for the edge to pick up. All processes are in the same container, so
-# this is a plain shared directory and the
+# Where the fitted image lands for the edge to pick up. Both processes are in the SAME container in
+# Plan F (edge :8088, gateway :8080, sidecar, Hermes), so this is a plain shared directory and the
 # bytes never go near the model's context. /tmp on purpose: these are transient, and in a Foundry
 # hosted agent only $HOME and /files survive a session anyway.
 _OUTBOX = os.environ.get("AGENT_OUTBOX", "/tmp/agent-outbox")
@@ -1697,6 +2175,14 @@ _OUTBOX = os.environ.get("AGENT_OUTBOX", "/tmp/agent-outbox")
 
 def _fit_image(data: bytes, max_bytes: int = _ATTACH_MAX_BYTES) -> tuple:
     """Re-encode an image so it fits the channel's attachment cap. Returns (bytes, mime, ext, note).
+
+    MEASURED 2026-08-18 on four real screenshots at 1280x720 CSS px, budget 180 KB:
+
+        page                      original   best-fitting result
+        learn.microsoft.com        137.9 KB  fits as-is, untouched
+        nousresearch.com           454.1 KB  156.9 KB  PNG, 128 colours
+        nousresearch.com fullpage  603.8 KB  168.9 KB  PNG,  64 colours
+        learn.microsoft.com  "     542.8 KB  needs downscaling (see below)
 
     WHY THE LADDER IS PNG-FIRST AND NOT JPEG-FIRST. Screenshots are mostly text and flat UI, where
     palette quantisation beats JPEG on BOTH size and legibility: on the docs page PNG-256 came out at
@@ -1939,7 +2425,7 @@ def fetch_url(url: str, max_chars: int = 20000) -> str:
         # Say what to do next. "ERROR 403" alone makes the agent give up and report failure to the
         # user, when the tool that WOULD have worked is sitting right there: browse_url drives a real
         # Chromium, which is exactly what bot-protected and JavaScript-rendered pages need. This
-        # Without this direction, a bot-protection response can end the task unnecessarily.
+        # happened live on 2026-08-17 -- a 403 from a recipe site ended the task instead of escalating.
         if e.code in (401, 403, 406, 429, 503):
             return (f"ERROR {e.code} fetching {url} — the site refused a plain HTTP client "
                     f"(bot protection or JavaScript-only). RETRY THIS URL WITH browse_url, which "

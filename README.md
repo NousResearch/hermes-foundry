@@ -60,7 +60,7 @@ Microsoft 365 / Foundry
           +-----------> Hermes :8642
           |
           +-----------> M365 sidecar :8010
-                         Graph, native M365 MCP, web, document, and code tools
+                         Graph, web, document, and remote code/browser tools
 ```
 
 Only the edge port is exposed. All internal services communicate over loopback.
@@ -235,8 +235,9 @@ the hosted session can satisfy its readiness window.
 ## Microsoft 365 access
 
 The sidecar exposes Microsoft 365 tools using the agent's own identity. Graph-backed tools cover
-mail, calendar, OneDrive, sharing, and generic Graph requests. Native Microsoft 365 MCP servers are
-also available through the edge manifest for supported workloads.
+mail, calendar, OneDrive, sharing, document operations, and generic Graph requests. First-party
+Microsoft 365 MCP discovery remains only in the explicit non-production `ResponsesApi` diagnostic
+mode; it is not part of the normal `HermesRouter` production path.
 
 Permissions and identity provisioning belong to the target tenant. This repository intentionally
 contains no tenant IDs, user addresses, blueprint IDs, client secrets, certificates, or deployment
@@ -280,8 +281,8 @@ Known non-production areas include:
   Certificate enrollment, rotation, expiry monitoring, revocation, and routine lifecycle management
   are not automated. Routine session isolation and end-to-end coverage are limited. We are waiting
   for Microsoft guidance on a simpler or alternative supported non-turn identity flow.
-- **Microsoft 365 provisioning:** Graph and native MCP operations depend on the tenant having
-  provisioned the Agent User's workloads and granted the necessary permissions. The repository does
+- **Microsoft 365 provisioning:** Graph operations depend on the tenant having provisioned the
+  Agent User's workloads and granted the necessary permissions. The repository does
   not automate tenant-wide consent, mailbox/OneDrive readiness, or every service-specific policy.
 - **Files:** the current OneDrive implementation uses simple upload requests. Resumable upload
   sessions, robust large-file transfer, retry/resume, and broad file-type testing are not complete.

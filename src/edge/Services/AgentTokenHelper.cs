@@ -2,13 +2,10 @@ namespace HelloWorldA365.Services;
 
 using Azure.Core;
 using Azure.Identity;
-using Azure.Security.KeyVault.Secrets;
 using Microsoft.Identity.Client;
-using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 
-public class AgentTokenHelper(ILogger<AgentTokenHelper> logger, IConfiguration config)
+public class AgentTokenHelper(ILogger<AgentTokenHelper> logger)
 {
     /// <summary>
     /// Performs the three-step agentic user identity token acquisition process using managed identity.
@@ -49,107 +46,24 @@ public class AgentTokenHelper(ILogger<AgentTokenHelper> logger, IConfiguration c
         }
     }
 
-    /// <summary>
-    /// Performs the documented autonomous Agent User flow with a client certificate held by the
-    /// Agent Identity Blueprint. This is for turn-less executions such as Foundry routines, where
-    /// Identity Proxy Manager cannot select the separately published Agent Identity.
-    /// </summary>
-    public async Task<string> GetAgenticUserTokenWithBlueprintCertificateAsync(
-        string agentAppId,
-        string agentAppInstanceId,
-        string userId,
-        string tenantId,
-        string[] scopes)
-    {
-        var vaultUri = config["RoutineCredentialVaultUri"];
-        var certificateName = config["RoutineCredentialCertificateName"];
-        if (string.IsNullOrWhiteSpace(vaultUri) || string.IsNullOrWhiteSpace(certificateName))
-            throw new InvalidOperationException(
-                "Routine blueprint certificate is not configured. Set RoutineCredentialVaultUri and RoutineCredentialCertificateName.");
-
-        try
-        {
-            using var certificate = await LoadCertificateAsync(vaultUri, certificateName);
-            var blueprintApp = ConfidentialClientApplicationBuilder
-                .Create(agentAppId)
-                .WithCertificate(certificate)
-                .WithAuthority(new Uri($"https://login.microsoftonline.com/{tenantId}"))
-                .Build();
-
-            // Microsoft Entra Agent ID's autonomous flow requires the published Agent Identity's
-            // client ID in fmi_path. This makes the resulting T1 usable only for that identity.
-            var blueprintToken = await blueprintApp
-                .AcquireTokenForClient(["api://AzureADTokenExchange/.default"])
-                .WithFmiPath(agentAppInstanceId)
-                .ExecuteAsync();
-
-            return await GetAgenticUserTokenFromBlueprintTokenAsync(
-                agentAppInstanceId,
-                userId,
-                tenantId,
-                scopes,
-                blueprintToken.AccessToken);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Error acquiring certificate-backed agentic user token");
-            throw;
-        }
-    }
-
     private async Task<AccessToken> GetBlueprintToken(string clientId)
     {
-        // Pin managed identity selection to the blueprint client id. An ambient credential can have
-        // a subject that Entra does not accept as an agent identity credential.
+        // REVERTED 2026-08-10. This must stay PINNED to the blueprint's client id.
+        //
+        // I briefly changed it to try an ambient DefaultAzureCredential first, reasoning that the
+        // blueprint's federated credentials name the project managed identity rather than the
+        // blueprint. That reasoning was wrong and it BROKE THE WORKING TEAMS PATH: the ambient
+        // credential yields a subject Entra rejects with
+        //   AADSTS70070 "... is not a valid agent identity credential subject"
+        // and the stock ResponsesApi path — the one that had successfully read the agent's mailbox
+        // hours earlier — started failing on every Teams message.
+        //
+        // Do not "improve" this without a test that exercises Teams end to end first.
         var credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions
         {
             ManagedIdentityClientId = clientId,
         });
         return await credential.GetTokenAsync(new TokenRequestContext(["api://AzureADTokenExchange/.default"]));
-    }
-
-    private async Task<string> GetAgenticUserTokenFromBlueprintTokenAsync(
-        string agentAppInstanceId,
-        string userId,
-        string tenantId,
-        string[] scopes,
-        string blueprintToken)
-    {
-        var instanceApp = ConfidentialClientApplicationBuilder
-            .Create(agentAppInstanceId)
-            .WithClientAssertion((AssertionRequestOptions _) => Task.FromResult(blueprintToken))
-            .WithAuthority(new Uri($"https://login.microsoftonline.com/{tenantId}"))
-            .Build();
-
-        var instanceTokenResult = await instanceApp
-            .AcquireTokenForClient(["api://AzureADTokenExchange/.default"])
-            .ExecuteAsync();
-
-        return await GetUserFederatedIdentityTokenAsync(
-            agentAppInstanceId,
-            tenantId,
-            blueprintToken,
-            instanceTokenResult.AccessToken,
-            userId,
-            scopes);
-    }
-
-    private static async Task<X509Certificate2> LoadCertificateAsync(string vaultUri, string certificateName)
-    {
-        var secretClient = new SecretClient(new Uri(vaultUri), new DefaultAzureCredential());
-        var secret = await secretClient.GetSecretAsync(certificateName);
-        var pfxBytes = Convert.FromBase64String(secret.Value.Value);
-        try
-        {
-            return X509CertificateLoader.LoadPkcs12(
-                pfxBytes,
-                password: null,
-                X509KeyStorageFlags.EphemeralKeySet);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(pfxBytes);
-        }
     }
 
     private async Task<string> GetUserFederatedIdentityTokenAsync(

@@ -35,3 +35,6 @@ secrets/
 .azure/
 deployment-output/
 *.deployment.json
+
+# Optional per-installation coordinates used by build.sh and new-version.sh.
+.deployment.local

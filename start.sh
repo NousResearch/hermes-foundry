@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Hermes Foundry entrypoint.
+# Plan F entrypoint — Hermes, the edge, the gateway and the M365 sidecar in one container.
 #
-# Startup order is part of the runtime contract:
+# STARTUP ORDER IS THE CONTRACT, learned the hard way:
 #
 #   1. config.yaml     Hermes reads it at boot, so it must exist first.
 #   2. sidecar :8010   Hermes' MCP handshake needs it, or the agent starts with no m365 tools.
@@ -12,10 +12,12 @@
 #                      platform's readiness window, so nothing may block on it. The gateway
 #                      absorbs the gap via HERMES_COLD_START_WAIT.
 #
-# Bind the edge before slow initialization so the platform readiness window is respected.
+# Two earlier versions failed exactly here: one gated the edge on Hermes and lost readiness every
+# time; another sat in a 60s wait loop for a process it had not started yet, so the edge bound long
+# after the window closed. Readiness is ~30s observed — treat it as a hard budget.
 set -uo pipefail
 
-log() { echo "[full-foundry] $*"; }
+log() { echo "[plan-f] $*"; }
 
 : "${MODEL_DEPLOYMENT_NAME:?MODEL_DEPLOYMENT_NAME is required}"
 : "${FALLBACK_MODEL_DEPLOYMENT_NAME:?FALLBACK_MODEL_DEPLOYMENT_NAME is required}"
@@ -27,8 +29,20 @@ log() { echo "[full-foundry] $*"; }
 #   Hermes API server  API_SERVER_KEY  ==  HERMES_KEY       sent by the gateway
 #   our gateway        GATEWAY_KEY     ==  AGENT_TOKEN_KEY  sent by the sidecar
 #
-# Generate missing values and derive both ends from the same keys. They never leave loopback, so
-# ephemeral per-session values are the default.
+# In the split ACA deployment those are four env vars across three container definitions, all fed
+# from the same two secrets. The coupling is invisible, so it is easy to set one end and not the
+# other — and both halves fail in ways that do not look like a key problem:
+#
+#   * API_SERVER_KEY empty -> Hermes refuses to start its API server at all ("Require a usable key:
+#     API_SERVER_ENABLED alone would load an unauthenticated server"), so :8642 never binds and
+#     every turn comes back as a gateway 502. Cost several deploy cycles to find.
+#   * AGENT_TOKEN_KEY unset while GATEWAY_KEY is set -> the sidecar gets 401 from /v1/agent-token,
+#     holds no Graph token, and EVERY m365 tool fails — while chat keeps working perfectly. That is
+#     the worst failure shape available: the agent talks normally and silently cannot touch mail,
+#     files or calendar.
+#
+# One container means one place to fix it: generate what is missing, then derive the other end from
+# it. These never leave loopback, so an ephemeral per-session value is the right default.
 gen_key() { head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 
 if [ -z "${API_SERVER_KEY:-}" ]; then
@@ -45,8 +59,21 @@ export RouterKey="${GATEWAY_KEY}"          # edge    -> gateway
 log "keys wired: hermes=${#API_SERVER_KEY} chars, gateway=${#GATEWAY_KEY} chars"
 
 # ---- put Hermes' state on the PERSISTED volume -------------------------------------------------
-# Foundry persists $HOME and /files across idle teardown; /opt/data is ephemeral. Keep Hermes state
-# under /files by default while allowing another host to override the path.
+# ⚠️ `/opt/data` IS NOT PERSISTED by Foundry. The hosted-agents docs are specific about what is:
+#
+#   "Each session gets a dedicated sandbox with a persistent filesystem ($HOME and /files), enabling
+#    scale-to-zero with stateful resume"
+#   "$HOME and /files content are persisted across turns and across idle periods"
+#   Idle row: "No requests for 15 minutes. Compute is deprovisioned. Session state ($HOME, /files) is
+#    persisted."
+#
+# Plan F wrote everything Hermes owns — sessions/, memories/, MEMORY.md, USER.md, skills/, cron/ — to
+# /opt/data, i.e. the container's writable layer, which is discarded on every idle teardown. The
+# platform was persisting state correctly; we were storing it outside the part it keeps. So a Plan F
+# agent forgot everything roughly every 15 minutes and it would have looked like Hermes' fault.
+#
+# HERMES_STATE is overridable only so a future non-Foundry host can point it elsewhere; the default
+# must stay on a persisted path.
 HERMES_STATE="${HERMES_STATE:-/files/hermes}"
 mkdir -p "$HERMES_STATE" 2>/dev/null || {
   log "🔴 cannot create $HERMES_STATE — falling back to /opt/data, which is EPHEMERAL: memory and"
@@ -75,13 +102,21 @@ fallback_providers:
   - provider: "azure-foundry"
     model: "${FALLBACK_MODEL_DEPLOYMENT_NAME}"
     base_url: "${AZURE_FOUNDRY_BASE_URL}"
+    # A fallback is a separate provider profile. Without this it silently defaults to API-key
+    # authentication even though the primary uses Entra ID, masking the primary failure with the
+    # unrelated Azure "invalid subscription key" 401.
+    auth_mode: "entra_id"
 agent:
   disabled_toolsets: ["file", "terminal", "code_execution", "browser", "project"]
 mcp_servers:
   m365:
     url: "http://localhost:8010/mcp"
     timeout: 60
-# The Hermes API server is a gateway platform and must be explicitly enabled in configuration.
+# THE API SERVER IS A GATEWAY *PLATFORM*, NOT A SERVICE — and it must be enabled here.
+# The gateway logged "No messaging platforms enabled" and never bound :8642, so every turn came
+# back "hermes.unreachable ... Connection refused" -> gateway 502. API_SERVER_* env vars alone are
+# not enough: gateway/platforms/api_server.py reads host/port/key from \`platforms.api_server.extra\`
+# and only falls back to the env vars once the platform itself is on.
 platforms:
   api_server:
     enabled: true
@@ -90,8 +125,19 @@ platforms:
       port: 8642
 YAML
 
-# Write both supported Hermes configuration paths under persisted state and mirror them to /opt/data
-# for code paths that still expect the legacy location.
+# WRITE BOTH PATHS. gateway/config.py documents the search order as
+#   2. ~/.hermes/config.yaml   (primary user-facing config)
+# and HERMES_HOME=/opt/data with HOME=/opt/data, so the file Hermes actually reads is
+# /opt/data/.hermes/config.yaml. Writing only /opt/data/config.yaml (what the ACA bicep does) left
+# the gateway with no platforms — "No messaging platforms enabled" — so the API server never bound
+# :8642 and every turn 502'd. Write both so neither location is the one that mattered.
+# WRITE INTO $HERMES_STATE, because that is what HOME now points at.
+#
+# This broke once, immediately: moving HOME to /files/hermes while still writing the config to
+# /opt/data meant `~/.hermes/config.yaml` did not exist, and Hermes came up with no model at all —
+#   "⚠️ Provider authentication failed: No inference provider configured. Run 'hermes model' ...
+#    or set an API key (OPENROUTER_API_KEY, OPENAI_API_KEY, etc.) in ~/.hermes/.env."
+# which reads like a missing credential and is actually a config file written to the wrong home.
 mkdir -p "$HERMES_STATE/.hermes"
 cp /tmp/hermes-config.yaml "$HERMES_STATE/.hermes/config.yaml"
 cp /tmp/hermes-config.yaml "$HERMES_STATE/config.yaml"
@@ -104,7 +150,7 @@ log "config sanity: $(head -c 120 "$HERMES_STATE/.hermes/config.yaml" | tr '\n' 
 
 # Respawn wrapper. Output goes to the container's STDOUT, prefixed — redirecting to files hid the
 # edge's bind exception from :logstream for several deploy cycles, and :logstream is the only view
-# into a hosted-agent container.
+# into a hosted-agent sandbox.
 supervise() {
   local name="$1"; shift
   ( while true; do
@@ -117,7 +163,7 @@ supervise() {
 }
 
 # ⚠️ PORT=8088 is injected by the platform — it is the port the AGENT must serve on, and the agent
-# is the edge. The gateway also reads os.environ["PORT"], so in a single container it grabbed
+# is the edge. edge-gateway/app.py reads os.environ["PORT"], so in a single container it grabbed
 # 8088 first and the edge died with "address already in use". Pin every port explicitly.
 # The sidecar runs on its OWN venv interpreter, never the ambient `python3` — that is Hermes' venv,
 # which does not have our pins and produced `ModuleNotFoundError: mcp.server.fastmcp`.
@@ -139,8 +185,10 @@ supervise edge env -C /opt/edge ASPNETCORE_URLS=http://+:8088 dotnet /opt/edge/H
 # `tool_search`/`tool_describe`/`tool_call` are present only when an MCP server attached, so 10 tools
 # means broken and 13 means wired.
 #
-# Wait generously and report failure clearly. The edge has already started, so this does not consume
-# the readiness budget.
+# This is exactly what happened on hfull's first-ever cold start (2026-08-17): the old loop waited
+# only 20s and then fell through SILENTLY, and the sidecar — which imports playwright, python-docx
+# and openpyxl — had not finished binding while the container was also serving a 1 GiB image pull.
+# So: wait generously, and be loud either way. Nothing gates on Hermes, so waiting here is free.
 SIDECAR_WAIT="${SIDECAR_WAIT:-180}"
 for i in $(seq 1 "$SIDECAR_WAIT"); do
   (echo > /dev/tcp/127.0.0.1/8010) >/dev/null 2>&1 && { log "sidecar listening after ${i}s"; break; }

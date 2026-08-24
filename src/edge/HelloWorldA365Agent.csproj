@@ -44,10 +44,13 @@
 		<PackageReference Include="Microsoft.Agents.Storage" Version="1.6.109-*" />
 		<PackageReference Include="Microsoft.Agents.Storage.Transcript" Version="1.6.109-*" />
 		<PackageReference Include="Microsoft.ApplicationInsights.AspNetCore" Version="2.23.0" />
-		<!-- Routine wire-protocol server. This package is NOT the non-production
-		     AgentLogic=ResponsesApi mode. Routines can only invoke an agent through the Responses or
-		     Invocations protocol, so this adapter forwards scheduled calls to the normal Hermes
-		     runtime. Ships lib/net8.0 as well as net10.0, so it resolves on net9.0. -->
+		<!-- Native Entra Agent OBO / Agent User FIC support. Routines identify the child Agent
+		     Identity and its paired Agent User; Microsoft.Identity.Web owns all token exchanges. -->
+		<PackageReference Include="Microsoft.Identity.Web.AgentIdentities" Version="4.14.2" />
+		<PackageReference Include="Microsoft.Identity.Web.TokenCache" Version="4.14.2" />
+		<!-- Responses protocol server. Routines can only invoke an agent through the responses or
+		     invocations protocol, and this sample ships activity-only, so routines could never
+		     target it. Ships lib/net8.0 as well as net10.0, so it resolves fine on our net9.0. -->
 		<PackageReference Include="Azure.AI.AgentServer.Responses" Version="1.0.0-beta.6" />
 		<PackageReference Include="Microsoft.Bcl.Memory" Version="10.0.7" />
 		<PackageReference Include="System.Runtime.Caching" Version="10.0.7" />

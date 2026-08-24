@@ -10,14 +10,18 @@ namespace HelloWorldA365.AgentLogic.ResponsesProtocol;
 /// <summary>
 /// Serves the <b>Responses</b> protocol, alongside the Activity protocol on /api/messages.
 ///
-/// <para><b>This is not <c>AgentLogic=ResponsesApi</c>.</b> "Responses protocol" is only the wire
-/// protocol Foundry routines use to wake the agent. This handler remains on the normal HermesRouter
-/// path and forwards routine input to the same in-container Hermes gateway as interactive turns.</para>
-///
+/// WHY THIS EXISTS
+/// ---------------
 /// Foundry <b>routines</b> (timer / recurring / event triggers) can only act via
 /// <c>invoke_agent_responses_api</c> or <c>invoke_agent_invocations_api</c>. Neither can target an
-/// agent that declares only the Activity protocol. Hosted agents can combine Responses and Activity
-/// protocols, so this class adds the Responses path needed by routines.
+/// agent that declares only the Activity protocol, which is what the a365 autopilot sample builds.
+/// Every one of our 20 routine runs failed 400 because of that, and we wrongly recorded it as a
+/// platform limitation (see AGENT365_RUNBOOK.md §7v, since corrected).
+///
+/// It is not a limitation. Microsoft's hosted-agents guidance names <b>Responses + Activity</b> as
+/// THE shape for an agent published to Teams/M365 — "supported protocols can be combined in a single
+/// agent", and the platform bridges Responses to Activity for channel delivery. This class adds the
+/// missing half.
 ///
 /// The two protocols share one brain on purpose: this handler calls exactly the same gateway
 /// endpoint that <see cref="HermesRouter.HermesRouterAgentLogicService"/> calls for Teams turns, so
@@ -30,7 +34,8 @@ namespace HelloWorldA365.AgentLogic.ResponsesProtocol;
 public sealed class HermesResponseHandler(
     IConfiguration config,
     IHttpClientFactory httpFactory,
-    AgentTokenHelper agentTokenHelper,
+    AgentUserAuthorizationService agentUserAuthorization,
+    RoutineBindingService routineBindings,
     ILogger<HermesResponseHandler> logger) : ResponseHandler
 {
     private readonly string _routerUrl = (config["RouterUrl"] ?? "").TrimEnd('/');
@@ -44,9 +49,21 @@ public sealed class HermesResponseHandler(
 
     private async Task<string> RunAsync(ResponseContext context, CancellationToken ct)
     {
-        var prompt = await context.GetInputTextAsync(cancellationToken: ct) ?? "";
-        if (string.IsNullOrWhiteSpace(prompt))
+        var signedInput = await context.GetInputTextAsync(cancellationToken: ct) ?? "";
+        if (string.IsNullOrWhiteSpace(signedInput))
             return "(no input)";
+
+        // The Responses endpoint is a non-turn entry point. It has no Agent 365 Activity metadata,
+        // so ordinary caller input is never authority to select an Agent User. Only an action that
+        // our edge created and signed during a verified owner turn may receive Agent OBO or execute
+        // scheduled work. This also rejects Foundry's manual-dispatch input override: testing must
+        // dispatch the stored action unchanged.
+        if (!routineBindings.TryReadInvocation(signedInput, out var binding, out var bindingError))
+        {
+            EdgeLog("responses.rejected", bindingError);
+            return "This invocation is not bound to this Hermes instance and was not executed.";
+        }
+        var prompt = BuildRoutineExecutionPrompt(binding.Task);
 
         if (string.IsNullOrEmpty(_routerUrl))
         {
@@ -57,7 +74,7 @@ public sealed class HermesResponseHandler(
         // A routine has no Teams conversation, so there is no channel-supplied session key. Key on
         // the agent itself, which keeps every scheduled wake-up on one stable Hermes session rather
         // than spawning a fresh one per run.
-        var sessionKey = $"routine:{Environment.GetEnvironmentVariable("AZURE_AI_AGENT_NAME") ?? "hermes"}";
+        var sessionKey = $"routine:{binding.AgentIdentityId}:{binding.RoutineName}";
 
         EdgeLog("responses.in", $"chars={prompt.Length} session={sessionKey}");
 
@@ -77,65 +94,46 @@ public sealed class HermesResponseHandler(
         if (!string.IsNullOrEmpty(_routerKey))
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _routerKey);
         req.Headers.TryAddWithoutValidation("X-Hermes-Session-Key", sessionKey);
+        req.Headers.TryAddWithoutValidation("X-Hermes-Session-Id", sessionKey);
+        // The owner authorized this exact immutable task when create_routine was called. Treat the
+        // scheduled execution as owner-authorized only after signature verification above; an
+        // unsigned Responses caller cannot set this header or receive a Graph token.
+        req.Headers.TryAddWithoutValidation("X-Caller-Tier", "owner");
 
-        // Mint the agent's own Graph token, exactly as the Activity path does — but from CONFIG,
-        // because a routine-driven turn has no ITurnContext and therefore no AgentMetadata. Without
-        // this a scheduled wake-up reaches Hermes with no credential and the m365 tools report
-        // "no agent credential present", which is indistinguishable from the token being broken.
-        var bpId = config["AgentBlueprintId"];
-        var instId = config["AgentInstanceId"];
-        var upn = config["AgentUpn"];
-        // The agent user is the final token subject. Prefer its object id and retain UPN as fallback.
-        var subject = (string.IsNullOrEmpty(config["AgentUserObjectId"]) ? upn : config["AgentUserObjectId"])!;
-        var tenant = config["AgentTenantId"];
-        if (!string.IsNullOrEmpty(bpId) && !string.IsNullOrEmpty(instId)
-            && !string.IsNullOrEmpty(upn) && !string.IsNullOrEmpty(tenant))
+        // The identity pair and required authorization mode come from the verified routine binding,
+        // not deployment-wide config and not model input. The binding contains no OAuth token,
+        // refresh token, certificate, or secret. Microsoft.Identity.Web uses the blueprint
+        // credential from Key Vault, validates the blueprint-child and Agent Identity/User
+        // relationships, and mints a fresh short-lived downstream token through native Agent OBO.
+        try
         {
-            try
+            var graphToken = await agentUserAuthorization.GetAccessTokenAsync(
+                binding.AgentIdentityId,
+                binding.AgentUserId,
+                binding.TenantId,
+                ["https://graph.microsoft.com/.default"],
+                ct);
+            if (!string.IsNullOrEmpty(graphToken))
             {
-                // Turn-less routine calls have no channel token and Identity Proxy Manager's T1 is
-                // bound to the hosted runtime identity, not the separately published identity that
-                // owns this Agent User. Use the documented autonomous flow when the isolated
-                // blueprint certificate is configured: certificate -> T1 with fmi_path -> Agent
-                // Identity T2 -> Agent User token. Existing channel behavior remains unchanged.
-                var useRoutineCertificate =
-                    !string.IsNullOrWhiteSpace(config["RoutineCredentialVaultUri"]) &&
-                    !string.IsNullOrWhiteSpace(config["RoutineCredentialCertificateName"]);
-                var graphToken = useRoutineCertificate
-                    ? await agentTokenHelper.GetAgenticUserTokenWithBlueprintCertificateAsync(
-                        bpId,
-                        instId,
-                        subject,
-                        tenant,
-                        ["https://graph.microsoft.com/.default"])
-                    : await agentTokenHelper.GetAgenticUserTokenAsync(
-                        bpId,
-                        instId,
-                        subject,
-                        tenant,
-                        ["https://graph.microsoft.com/.default"]);
-                if (!string.IsNullOrEmpty(graphToken))
-                {
-                    req.Headers.TryAddWithoutValidation("X-Agent-Graph-Token", graphToken);
-                    req.Headers.TryAddWithoutValidation("X-Agent-Upn", upn);
-                    EdgeLog("token.minted", $"responses provider={(useRoutineCertificate ? "blueprint-certificate" : "identity-proxy")} len={graphToken.Length} subject={subject}");
-                }
-                else EdgeLog("token.missing", "responses: helper returned null");
-            }
-            catch (Exception ex)
-            {
-                // Log the AADSTS code, not MSAL's paraphrase. "Service is unavailable to process the
-                // request" told us nothing for a whole debugging round; the ErrorCode and response
-                // body are what identify the cause.
-                var msal = ex as Microsoft.Identity.Client.MsalServiceException;
-                EdgeLog("token.error",
-                    $"responses subject={subject} {ex.GetType().Name}: {ex.Message} " +
-                    $"| errorCode={msal?.ErrorCode ?? "(n/a)"} status={msal?.StatusCode.ToString() ?? "(n/a)"} " +
-                    $"| body={(msal?.ResponseBody ?? "").Replace("\n", " ")} " +
-                    $"| inner={ex.InnerException?.Message}");
+                req.Headers.TryAddWithoutValidation("X-Agent-Graph-Token", graphToken);
+                req.Headers.TryAddWithoutValidation("X-Agent-Upn", binding.AgentUpn);
+                EdgeLog("token.minted",
+                    $"responses provider=entra-agent-obo len={graphToken.Length} agent={binding.AgentIdentityId}");
             }
         }
-        else EdgeLog("token.unconfigured", $"bp={bpId is null} inst={instId is null} upn={upn is null} tid={tenant is null}");
+        catch (Exception ex)
+        {
+            // Log the AADSTS code, not MSAL's paraphrase. The error code and response body identify
+            // whether the blueprint credential, child relationship, or Agent User grant is wrong.
+            var msal = ex as Microsoft.Identity.Client.MsalServiceException;
+            EdgeLog("token.error",
+                $"responses agent={binding.AgentIdentityId} user={binding.AgentUserId} " +
+                $"{ex.GetType().Name}: {ex.Message} | errorCode={msal?.ErrorCode ?? "(n/a)"} " +
+                $"status={msal?.StatusCode.ToString() ?? "(n/a)"} " +
+                $"| body={(msal?.ResponseBody ?? "").Replace("\n", " ")} " +
+                $"| inner={ex.InnerException?.Message}");
+            return "This routine could not acquire its Agent User identity and was not executed.";
+        }
 
         try
         {
@@ -171,6 +169,30 @@ public sealed class HermesResponseHandler(
             return "The gateway was unreachable.";
         }
     }
+
+    /// <summary>
+    /// Convert the owner-authorized per-run task into an execution turn.
+    ///
+    /// The stored task can naturally contain words such as "daily" or "every run" because it was
+    /// authored while the owner was creating a schedule. Forwarding that text by itself caused
+    /// Hermes to apply its scheduling instructions a second time: the fired routine asked for a
+    /// time, or claimed it had created another routine, instead of doing the work. The signed
+    /// binding already proves that Foundry has scheduled and fired the task, so this envelope is
+    /// trusted edge context rather than model- or caller-supplied authority.
+    /// </summary>
+    private static string BuildRoutineExecutionPrompt(string task) =>
+        "TRUSTED FOUNDRY ROUTINE EXECUTION\n\n"
+      + "A Microsoft Foundry Routine has already reached its scheduled occurrence. This is NOT a "
+      + "request to create, change, inspect, or discuss a schedule. Do not call create_routine, "
+      + "list_routines, or remove_routine. Do not ask what time or time zone the work should use. "
+      + "Words such as 'daily', 'scheduled', or 'every run' inside the task describe this routine; "
+      + "they are not a new scheduling request.\n\n"
+      + "Execute exactly one occurrence of the task NOW, using your own Microsoft 365 identity and "
+      + "the tools attached to this run. For a requested side effect, call the appropriate tool and "
+      + "treat only its returned success as completion. If the tool fails, report the exact failure; "
+      + "never replace execution with scheduling advice or an unsupported claim of success.\n\n"
+      + "TASK FOR THIS OCCURRENCE:\n"
+      + task;
 
     /// <summary>
     /// Mirror of the Activity path's EdgeLog. Foundry's own :logstream returns session_not_found for

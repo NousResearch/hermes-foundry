@@ -9,6 +9,9 @@ using Microsoft.Agents.Hosting.AspNetCore;
 using Microsoft.Agents.Storage;
 
 using Microsoft.ApplicationInsights.Extensibility;
+using Microsoft.Identity.Abstractions;
+using Microsoft.Identity.Web;
+using Microsoft.Identity.Web.TokenCacheProviders.InMemory;
 using System.Text;
 using Microsoft.Agents.A365.Observability.Runtime;
 
@@ -46,12 +49,44 @@ builder.AddAgent<A365AgentApplication>();
 // Uncomment this so you can get logs of activities.
 // builder.Services.AddSingleton<Microsoft.Agents.Builder.IMiddleware[]>([new TranscriptLoggerMiddleware(new FileTranscriptLogger())]);
 
-// Historical name: this factory returns HermesRouter by default. ResponsesApi is an explicit,
-// non-production compatibility option only; see the factory's documentation.
 builder.Services.AddSingleton<ResponsesApiAgentLogicServiceFactory>();
 
 // Register auth helper
 builder.Services.AddSingleton<AgentTokenHelper>();
+
+// Entra Agent OBO for turn-less routine work. This process is the instance-aware SaaS application:
+// the blueprint is its confidential client, while AgentInstanceId and AgentUserObjectId select the
+// child instance on each invocation. Microsoft.Identity.Web performs the supported blueprint ->
+// Agent Identity -> Agent User flow and owns token caching/refresh. There is no human sign-in and
+// no delegated token stored by Hermes.
+builder.Services.Configure<MicrosoftIdentityApplicationOptions>("AzureAd", options =>
+{
+    options.Instance = "https://login.microsoftonline.com/";
+    options.TenantId = builder.Configuration["AgentTenantId"];
+    options.ClientId = builder.Configuration["AgentBlueprintId"];
+
+    var vaultUri = builder.Configuration["RoutineCredentialVaultUri"];
+    var certificateName = builder.Configuration["RoutineCredentialCertificateName"];
+    if (!string.IsNullOrWhiteSpace(vaultUri) && !string.IsNullOrWhiteSpace(certificateName))
+    {
+        options.ClientCredentials =
+        [
+            new CredentialDescription
+            {
+                SourceType = CredentialSource.KeyVault,
+                KeyVaultUrl = vaultUri,
+                KeyVaultCertificateName = certificateName
+            }
+        ];
+    }
+});
+builder.Services.AddTokenAcquisition(isTokenAcquisitionSingleton: true);
+builder.Services.AddInMemoryTokenCaches();
+builder.Services.AddAgentIdentities();
+builder.Services.AddSingleton<AgentUserAuthorizationService>();
+// Creates instance-bound routines during verified owner turns and verifies their immutable action
+// when Foundry later invokes the Responses protocol without an Activity turn.
+builder.Services.AddSingleton<RoutineBindingService>();
 
 // Register OpenAPI for external agents
 builder.Services.AddOpenApi();
@@ -84,8 +119,6 @@ builder.Logging.AddApplicationInsights();
 
 
 // ─── Responses protocol ───────────────────────────────────────────────────────────────────────
-// IMPORTANT: "Responses protocol" here is NOT AgentLogic=ResponsesApi. This is a wire-protocol
-// adapter that lets Foundry routines invoke the normal HermesRouter/Hermes runtime.
 // Added alongside the Activity protocol, not instead of it. Microsoft's hosted-agents guidance
 // names "Responses + Activity" as the shape for an agent published to Teams/M365, and only the
 // Responses (or Invocations) protocol can be targeted by a Foundry ROUTINE — which is how the agent
@@ -111,11 +144,69 @@ logger.LogWarning("Application starting...");
 // ===================================
 app.UseRouting();
 
-// Routine wire-protocol middleware + endpoints (/responses). This still routes into Hermes; it does
-// not enable the non-production ResponsesApi AgentLogic implementation. Mapped before /api/messages so both
+// Responses protocol middleware + endpoints (/responses). Mapped before /api/messages so both
 // protocols are served by the one container, which is what "protocols can be combined" requires.
 app.UseAgentServerCore();
 app.MapResponsesServer();
+
+// Loopback routine-control API for our co-located MCP sidecar. RouterKey authenticates the local
+// process; RoutineBindingService still requires a short-lived capability minted from a verified
+// owner Activity turn, so knowing this endpoint or choosing identity IDs in model text grants
+// nothing.
+static bool IsInternalRoutineCaller(HttpRequest request, IConfiguration configuration)
+{
+    var expected = configuration["RouterKey"] ?? "";
+    var supplied = request.Headers.Authorization.ToString();
+    if (string.IsNullOrEmpty(expected) || supplied.Length != "Bearer ".Length + expected.Length)
+        return false;
+    return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+        Encoding.UTF8.GetBytes(supplied), Encoding.UTF8.GetBytes($"Bearer {expected}"));
+}
+
+app.MapPost("/internal/routines/create", async (
+    HttpRequest request,
+    RoutineCreateControlRequest body,
+    RoutineBindingService routines,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    if (!IsInternalRoutineCaller(request, configuration)) return Results.Unauthorized();
+    var result = await routines.CreateAsync(
+        body.Capability,
+        new CreateRoutineRequest
+        {
+            Name = body.Name,
+            Task = body.Task,
+            CronExpression = body.CronExpression,
+            TimeZone = body.TimeZone
+        },
+        cancellationToken);
+    return result.Ok ? Results.Ok(result) : Results.BadRequest(result);
+});
+
+app.MapPost("/internal/routines/list", async (
+    HttpRequest request,
+    RoutineCapabilityControlRequest body,
+    RoutineBindingService routines,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    if (!IsInternalRoutineCaller(request, configuration)) return Results.Unauthorized();
+    var result = await routines.ListAsync(body.Capability, cancellationToken);
+    return result.Ok ? Results.Ok(result) : Results.BadRequest(result);
+});
+
+app.MapPost("/internal/routines/delete", async (
+    HttpRequest request,
+    RoutineDeleteControlRequest body,
+    RoutineBindingService routines,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    if (!IsInternalRoutineCaller(request, configuration)) return Results.Unauthorized();
+    var result = await routines.DeleteAsync(body.Capability, body.Name, cancellationToken);
+    return result.Ok ? Results.Ok(result) : Results.BadRequest(result);
+});
 // Enable buffering globally - this allows request body to be read multiple times
 app.Use(next => context =>
 {
@@ -220,4 +311,23 @@ app.Run();
 static class DiagHttpHolder
 {
     public static readonly HttpClient Client = new() { Timeout = TimeSpan.FromSeconds(10) };
+}
+
+sealed class RoutineCreateControlRequest
+{
+    public string Capability { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Task { get; set; } = "";
+    public string CronExpression { get; set; } = "";
+    public string TimeZone { get; set; } = "UTC";
+}
+
+class RoutineCapabilityControlRequest
+{
+    public string Capability { get; set; } = "";
+}
+
+sealed class RoutineDeleteControlRequest : RoutineCapabilityControlRequest
+{
+    public string Name { get; set; } = "";
 }

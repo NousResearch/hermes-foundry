@@ -4,7 +4,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-: "${REG:?Set REG to the Azure Container Registry name (without .azurecr.io)}"
+[ ! -f .deployment.local ] || source ./.deployment.local
+: "${REG:?Set REG to the Azure Container Registry name (without .azurecr.io), or add it to .deployment.local}"
 # A positional tag takes precedence over TAG. Agent versions are pinned to the resulting digest.
 TAG="${1:-${TAG:-v1}}"
 

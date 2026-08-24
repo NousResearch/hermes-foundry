@@ -13,8 +13,6 @@ using Microsoft.Agents.A365.Notifications.Models;
 /// </summary>
 public class A365AgentApplication : AgentApplication
 {
-    // Historical type name. The factory selects production HermesRouter unless an operator
-    // explicitly opts into the non-production ResponsesApi compatibility path.
     private readonly ResponsesApiAgentLogicServiceFactory _factory;
     private readonly IConfiguration _configuration;
     private readonly ILogger<A365AgentApplication> _logger;
@@ -43,8 +41,25 @@ public class A365AgentApplication : AgentApplication
 
     private void ConfigureMessageHandling()
     {
-        // Register email notifications with agentic sign-in. The router deduplicates at-least-once
-        // notification delivery by activity id before sending a reply.
+        // ── EMAIL NOTIFICATIONS: RE-REGISTERED (2026-08-10) ───────────────────────────────────
+        //
+        // This was commented out on 2026-08-07 — deliberately parked, never deleted — so that the
+        // Teams/activity path could be tested without inbound email retries muddying the signal.
+        // It is back on, because it is the actual email path and the agent is meant to have it.
+        //
+        // History worth keeping, because it shaped the (wrong) conclusion that followed: with this
+        // registered, inbound email failed at Foundry's ingress with a CheckAccess 400 and bounced a
+        // stack trace to the sender ~4 times per message. That volume is what Exchange flagged as
+        // suspicious outbound sending on 2026-08-05, and it is why the handler came off.
+        //
+        // What we did NOT know then, and do now: the blueprint had NO Microsoft Graph consent, so
+        // the agentic user token could never be minted at all (AADSTS65001 on the user_fic step,
+        // RUNBOOK 7z). Graph inheritance now reports OK, 5 of 5. Several conclusions recorded while
+        // that was broken deserve re-testing rather than restating.
+        //
+        // Dedupe is already in place: HermesRouterAgentLogicService.AlreadyReplied() keys on the
+        // activity id, so a redelivered notification cannot produce a second reply. That is the
+        // control that makes re-registering safe this time.
         this.OnAgenticEmailNotification(async (turnContext, turnState, agentNotificationActivity, cancellationToken) =>
         {
             var agent = await GetAgentFromRecipient(turnContext.Activity);

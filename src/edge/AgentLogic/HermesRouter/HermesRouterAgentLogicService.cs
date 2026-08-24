@@ -14,12 +14,18 @@ using Microsoft.Agents.Connector.Types;
 using Microsoft.Agents.Core.Models;
 
 /// <summary>
-/// Foundry-hosted edge that forwards each turn to the loopback Hermes gateway. Foundry supplies
-/// identity, hosting, and governance while the container owns the agent runtime.
+/// The thin edge. Foundry hosts this; the actual turn runs in the customer's own
+/// sandbox-router, which owns per-agent sandbox lifecycle, durable memory and default-deny egress.
+///
+/// This replaces the sample's ResponsesApiAgentLogicService: instead of calling the Foundry
+/// Responses API directly, every turn is forwarded to our gateway. Foundry supplies identity,
+/// hosting and governance; the runtime stays ours. That is the canonical architecture —
+/// Teams → Foundry edge → ACA sandbox.
 /// </summary>
 public sealed class HermesRouterAgentLogicService : IAgentLogicService
 {
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(170) };
+    private const string AgentToAgentDisabledMessage = "Agent-to-agent communication is disabled";
 
     private readonly AgentMetadata _agent;
     private readonly ILogger _logger;
@@ -31,14 +37,16 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     private readonly string _tenantDomain;
     private readonly HelloWorldA365.Services.AgentTokenHelper _tokenHelper;
     private readonly Microsoft.Agents.Builder.App.UserAuth.UserAuthorization _userAuth;
+    private readonly HelloWorldA365.Services.RoutineBindingService _routineBindings;
 
     /// <summary>
     /// One inbound email must produce at most ONE outbound reply, for the lifetime of the process.
     ///
     /// Agent 365 delivery is at-least-once: the same notification is redelivered when a turn is slow
     /// or a send is retried. Every redelivery previously sent another reply, so a single email could
-    /// produce multiple near-identical outbound messages. Dropping a duplicate is safer than risking
-    /// a mailbox sending restriction.
+    /// produce four or five near-identical outbound messages — which is what Exchange's outbound spam
+    /// heuristics flagged on 2026-08-05 ("will be restricted if this activity continues"). Losing the
+    /// agent's mailbox to a sending restriction is a far worse failure than dropping a duplicate.
     /// </summary>
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _repliedTo = new();
     private static DateTime _nextSweepUtc = DateTime.UtcNow.AddMinutes(10);
@@ -59,12 +67,14 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
 
     public HermesRouterAgentLogicService(AgentMetadata agent, IConfiguration config, ILogger logger,
         HelloWorldA365.Services.AgentTokenHelper tokenHelper = null,
-        Microsoft.Agents.Builder.App.UserAuth.UserAuthorization userAuth = null)
+        Microsoft.Agents.Builder.App.UserAuth.UserAuthorization userAuth = null,
+        HelloWorldA365.Services.RoutineBindingService routineBindings = null)
     {
         _userAuth = userAuth;
         _agent = agent;
         _logger = logger;
         _tokenHelper = tokenHelper;
+        _routineBindings = routineBindings;
         _routerUrl = (config["RouterUrl"] ?? "").TrimEnd('/');
         _routerKey = config["RouterKey"] ?? "";
         _ownerUpn = (config["AgentOwnerUpn"] ?? "").Trim();
@@ -80,12 +90,31 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     /// <c>grant_type=user_fic</c> for the agent user). Microsoft's own workstream-manager sample
     /// uses exactly this to call Graph as the agent.
     ///
-    /// Sent per turn rather than cached in the runtime: the container is long-lived, the token is
-    /// not, and a standing credential is precisely what the isolation model avoids.
+    /// Sent per turn rather than cached in the sandbox: the sandbox is long-lived, the token is not,
+    /// and a standing credential inside the sandbox is precisely what the isolation model avoids.
     /// Failure is non-fatal — the turn proceeds without M365 tools rather than dying.
     /// </summary>
-    // Resolve the per-instance owner from the agent user's manager. Cache the result for the process
-    // and fall back to configured AgentOwner* values when Graph is unavailable.
+    /// <remarks>ACTIVE. Called from RunAsync below —
+    /// see the "AGENT'S OWN M365 ACCESS" block there for why, and for how to re-enable.</remarks>
+
+    // ---- WHO THIS AGENT WORKS FOR -----------------------------------------------------------
+    //
+    // AgentOwnerOid / AgentOwnerUpn are environment variables on the AGENT VERSION, and every
+    // instance created from the blueprint shares that one version. So a single owner was baked in
+    // for all of them: John Dow asked HIS OWN agent (John.Hermes) to create a file and was refused
+    // because the agent had been told that a different tenant user was its owner, so it treated him as
+    // a colleague. Hard-coding the owner cannot work the moment there is more than one teammate.
+    //
+    // The per-instance answer already exists in the directory. When an instance is created, the
+    // platform sets the agent user's MANAGER to the human who created it ("Set user manager" by
+    // Microsoft 365 App Catalog Services, in the audit log). Measured 2026-08-18:
+    //     John.Hermes -> JohnDow@     Agent B -> Owner B     Agent C -> Owner C
+    // So the agent's own manager IS its owner, with no configuration to get wrong.
+    //
+    // Resolved once and cached for the process: a hosted agent container serves one agent identity,
+    // and a manager change is rare enough that a restart is an acceptable refresh. Any failure
+    // leaves the cache empty and falls back to the configured values, so a Graph outage degrades to
+    // the old behaviour instead of dropping the owner entirely.
     private static string _resolvedOwnerOid;
     private static string _resolvedOwnerUpn;
     private static bool _ownerResolved;
@@ -173,19 +202,27 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     // ---- entry points -----------------------------------------------------------------------
 
     public Task<string> NewEmailReceived(string fromEmail, string subject, string messageBody) =>
-        RunAsync(AgentKey(), Prompt($"You received an email from {Clean(fromEmail)}.",
-                                    $"Subject: {Clean(subject)}\n\n{messageBody}"),
-                 CancellationToken.None);
+        IsInternalHermesAgentAddress(fromEmail)
+            ? Task.FromResult(AgentToAgentDisabledMessage)
+            : RunAsync(AgentKey(), Prompt($"You received an email from {Clean(fromEmail)}.",
+                                         $"Subject: {Clean(subject)}\n\n{messageBody}"),
+                       CancellationToken.None);
 
     public Task<string> NewChatReceived(string chatId, string fromUser, string messageBody) =>
-        RunAsync(AgentKey(), Prompt($"{Clean(fromUser)} sent you a chat message.", messageBody),
-                 CancellationToken.None);
+        IsInternalHermesAgentAddress(fromUser)
+            ? Task.FromResult(AgentToAgentDisabledMessage)
+            : RunAsync(AgentKey(), Prompt($"{Clean(fromUser)} sent you a chat message.", messageBody),
+                       CancellationToken.None);
 
     public async Task NewActivityReceived(ITurnContext turnContext, ITurnState turnState,
         CancellationToken cancellationToken)
     {
         var text = turnContext.Activity.Text;
-        // Caller identity fields are required to diagnose authority decisions.
+        // LOG THE *FROM* FIELDS, not just the recipient. This line used to print recipId/recipAad —
+        // i.e. the AGENT — and nothing about who was speaking, which is the one thing every caller
+        // decision below depends on. When hfull answered Teams turns in 64ms with `result: success`
+        // and no reply, the log could not say whether the caller had been identified, because it
+        // never contained the caller.
         var fromDbg = turnContext.Activity?.From;
         var fromProps = fromDbg?.Properties is null ? "(null)" : string.Join("/", fromDbg.Properties.Keys);
         EdgeLog("message.in", $"channel={turnContext.Activity.ChannelId} type={turnContext.Activity.Type} " +
@@ -200,6 +237,26 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         // evaluates AuthorityPolicy — in the argument list of the ReplyAsync call.
         await EnsureOwnerResolvedAsync(cancellationToken);
 
+        // TEMPORARY AGENT-TO-AGENT CIRCUIT BREAKER. Do this at ingress, before RunAsync, so Hermes
+        // never sees the message and cannot decide to continue the exchange. Match the VERIFIED
+        // activity identity (or a directory lookup by its verified oid), never text in the message.
+        // The rule intentionally applies only to internal accounts whose local part ends `.hermes`;
+        // the existing outsider gate remains unchanged.
+        var ingressCaller = CallerOf(turnContext);
+        var inboundAddress = ingressCaller.email;
+        if (string.IsNullOrWhiteSpace(inboundAddress))
+            inboundAddress = await ResolveDirectoryAddressAsync(
+                turnContext, turnContext.Activity?.From?.AadObjectId);
+        if (ingressCaller.tier != "outsider"
+         && (IsHermesAgentAddress(inboundAddress)
+          || IsHermesAgentAddress(turnContext.Activity?.From?.Name)))
+        {
+            EdgeLog("agent.to.agent.blocked", $"channel={turnContext.Activity.ChannelId}");
+            await SendImmediateChannelReplyAsync(
+                turnContext, AgentToAgentDisabledMessage, cancellationToken);
+            return;
+        }
+
         // HARD STOP for callers outside the organisation. Dropped HERE, before the prompt is built,
         // before the gateway is called, before Hermes starts and before any tool can run. Nothing is
         // spent and nothing is sent.
@@ -210,9 +267,26 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         var caller = CallerOf(turnContext);
         if (caller.tier == "outsider")
         {
-            // Tenant-authenticated channels already establish organisational origin. If caller fields
-            // are absent there, apply colleague-level authority; keep the hard stop for channels that
-            // can receive traffic from external senders.
+            // ⚠️ THE HARD STOP IS FOR EMAIL, NOT FOR TEAMS — and applying it to Teams produced a
+            // silent, invisible failure.
+            //
+            // The reasoning above is about a mailbox: anyone on the internet can email the agent, so an
+            // unidentified sender must not be answered. A Teams activity is not that. It arrives through
+            // Azure Bot Service under the endpoint's `BotServiceTenant` authorization scheme, so the
+            // platform has already established it came from inside this tenant. If we cannot pull an oid
+            // or an address out of the Activity, that is OUR extraction failing — not a stranger.
+            //
+            // What it cost (2026-08-17): hfull answered every Teams message in 64-100ms with
+            // `result: success` and no reply. From outside it looked like Teams delivery was broken, and
+            // hours went into diffing blueprints, bots, licences and consents — while the platform
+            // traces said `microsoft.channel.name: msteams` the whole time.
+            //
+            // So on a tenant-authenticated channel, treat an unidentified caller as a COLLEAGUE rather
+            // than refusing. Authority is still gated — colleague means answers and information, no side
+            // effects. Refusal stays for channels where an outsider is genuinely reachable.
+            //
+            // ⛔ THIS DIVERGES FROM THE THIN-FOUNDRY EDGE ON PURPOSE. It lives only in Plan F's forked
+            // source (full-foundry/src/edge). Do not port it to the frozen stack without asking.
             var ch = Convert.ToString(turnContext.Activity?.ChannelId) ?? "";
             var tenantAuthenticated = string.Equals(ch, "msteams", StringComparison.OrdinalIgnoreCase)
                                    || string.Equals(ch, "directline", StringComparison.OrdinalIgnoreCase)
@@ -249,8 +323,16 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         // HARD STOP for senders outside the organisation — see NewActivityReceived for why this is
         // silent. Checked before dedupe so an outsider cannot consume a dedupe slot either.
         //
-        // Email activities may omit address and object-id fields. Resolve the sender before applying
-        // the authority gate; an unidentified sender is not automatically a confirmed outsider.
+        // BUG FIXED 2026-08-12. An email activity carries NO sender identity: Activity.From has a
+        // display name and nothing else — no AadObjectId, no address. So CallerOf returned "outsider"
+        // for EVERY email including the owner's, and this hard stop turned that into silence. The
+        // agent ignored its own owner's mail for half an hour with no reply and no error:
+        //   caller.refused | tier=outsider channel=email email=(none) oid=(none) from=John Dow
+        // Teams was unaffected because a Teams activity does carry AadObjectId.
+        //
+        // Two fixes, and both matter. Resolve who actually sent it, and never refuse merely because
+        // we could not tell. "Unidentified" is NOT "outsider" — conflating them is what silenced the
+        // owner, and fail-closed on identity is only safe when the consequence isn't a hard stop.
         var emailCaller = CallerOf(turnContext);
         var identified = !string.IsNullOrWhiteSpace(emailCaller.email)
                       || !string.IsNullOrWhiteSpace(emailCaller.oid);
@@ -259,8 +341,12 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             var resolved = await ResolveEmailSenderAsync(turnContext.Activity?.Id);
             if (!string.IsNullOrWhiteSpace(resolved))
             {
-                // Stamp the resolved sender onto the activity so every later authority calculation
-                // uses the same identity.
+                // Stamp it onto the activity BEFORE computing anything from it. Resolving the sender
+                // only for the gate below fixed the door and nothing behind it: the prompt, the
+                // authority policy and the X-Caller-Tier header each call CallerOf again, recompute
+                // from the untouched activity, and get "outsider". The owner was let in and then told
+                // "I cannot take those actions for an external sender" (observed 2026-08-12 16:08:
+                // email.sender.resolved tier=owner, then caller.tier | outsider one second later).
                 StampResolvedSender(turnContext, resolved);
                 emailCaller = CallerOf(turnContext);
                 identified = true;
@@ -268,10 +354,12 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             }
             else
             {
-                // Deliberately NOT a refusal. The turn proceeds and the prompt's outsider policy
-                // constrains it (no tools, no internal information), which fails safe on data
-                // without failing silent on the owner.
-                EdgeLog("email.sender.unresolved", $"from={from} — proceeding at outsider tier, NOT refusing");
+                // Organization-only email policy: an unresolved sender is not proven internal.
+                // Drop before dedupe, RunAsync, tools, or any outbound reply. Microsoft 365 does not
+                // expose a documented sender-domain filter for the notification subscription, so
+                // this edge check is the first boundary we control.
+                EdgeLog("email.sender.unresolved", $"from={from} — dropped before Hermes (organization-only email policy)");
+                return;
             }
         }
         if (identified && emailCaller.tier == "outsider")
@@ -279,6 +367,19 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             EdgeLog("caller.refused", $"tier=outsider channel=email " +
                                       $"email={emailCaller.email ?? "(none)"} oid={emailCaller.oid ?? "(none)"} " +
                                       $"from={from}");
+            return;
+        }
+
+        if (IsHermesAgentAddress(emailCaller.email))
+        {
+            var blockedKey = turnContext.Activity.Id ?? turnContext.Activity.Conversation?.Id;
+            if (!AlreadyReplied(blockedKey))
+            {
+                await turnContext.SendActivityAsync(
+                    turnContext.Activity.CreateEmailResponseActivity(AgentToAgentDisabledMessage));
+                EdgeLog("agent.to.agent.blocked", "channel=email");
+            }
+            else EdgeLog("email.duplicate.suppressed", $"key={blockedKey}");
             return;
         }
 
@@ -296,12 +397,27 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             EdgeLog("email.empty.body", "no reply sent");
             return;
         }
-        // Use the incoming activity's extension method so conversation context is explicit.
+        // Uses the EXTENSION method on the incoming activity, which routes through
+        // IActivity.CreateReply() and carries conversation context explicitly.
+        //
+        // CORRECTION (2026-08-05): an earlier comment here claimed the STATIC
+        // EmailResponse.CreateEmailResponseActivity() was the cause of the CheckAccess 400 and the
+        // duplicate replies. That was wrong. Microsoft's own Python sample uses the static form and
+        // lets the SDK fill conversation context on send. At-least-once redelivery is handled by
+        // AlreadyReplied above. A second, distinct duplicate was observed on 2026-08-19: Hermes used
+        // send_email to answer the sender, then this handler sent Hermes' final tool-status text as
+        // the native reply. The turn instruction below makes the native Activity reply the single
+        // delivery path for the current message. Keeping the extension method because being explicit
+        // costs nothing — not because the static one is broken.
         string reply;
         try
         {
             reply = await RunAsync(CallerSessionKey(turnContext),
-                Prompt($"You received an email from {Clean(from)}. Reply to it.\n\n"
+                Prompt($"You received an email from {Clean(from)}. Your final response text is "
+                     + "automatically sent once as the native reply in the original email thread. "
+                     + "To answer this current message, do NOT call send_email or reply_email; just "
+                     + "return the reply body. You may use an email tool only when the sender "
+                     + "explicitly asks you to send a separate message to another recipient.\n\n"
                      + SpeakerContext(turnContext), body),
                 CancellationToken.None);
         }
@@ -316,6 +432,14 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         }
         try
         {
+            // FUTURE DESIGN OPTION: treat inbound email only as an event and do not automatically
+            // send this native reply. Hermes would then decide whether to respond at all and choose
+            // send_email/reply_email itself. That may be the better foundation for deliberate
+            // agent-to-agent communication, where silence, delegation, or a new message can be more
+            // appropriate than an unconditional thread reply. It also needs a hard exactly-once
+            // outbound contract and failure handling first. Until then, the native Activity reply is
+            // the reliable path: the platform preserves the thread, and the instruction above keeps
+            // Hermes from independently sending a duplicate.
             await turnContext.SendActivityAsync(turnContext.Activity.CreateEmailResponseActivity(reply));
             EdgeLog("email.replied", $"chars={reply?.Length ?? 0}");
         }
@@ -397,6 +521,23 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             EdgeLog("reply.FAILED", $"{ex.GetType().Name}: {ex.Message}");
             throw;
         }
+    }
+
+    /// <summary>Reply through the originating channel without invoking Hermes.</summary>
+    private static async Task SendImmediateChannelReplyAsync(
+        ITurnContext turnContext, string message, CancellationToken ct)
+    {
+        if (string.Equals(turnContext.Activity?.ChannelId, "email", StringComparison.OrdinalIgnoreCase))
+        {
+            await turnContext.SendActivityAsync(turnContext.Activity.CreateEmailResponseActivity(message));
+            return;
+        }
+        if (turnContext.Activity?.Type == ActivityTypes.Message && turnContext.StreamingResponse != null)
+        {
+            turnContext.StreamingResponse.QueueTextChunk(message);
+            return;
+        }
+        await turnContext.SendActivityAsync(MessageFactory.Text(message), ct);
     }
 
     /// <summary>
@@ -500,14 +641,72 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         if (!string.IsNullOrEmpty(_routerKey))
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _routerKey);
         req.Headers.TryAddWithoutValidation("X-Hermes-Session-Key", sessionKey);
-        // Hermes uses Session-Id for conversation continuity and Session-Key for long-term memory.
-        // Use the same per-caller value for both so channels converge on one session and memory scope.
+        // ⚠️ TWO DIFFERENT HEADERS, AND WE WERE ONLY SENDING ONE. From Hermes'
+        // gateway/platforms/api_server.py, verbatim:
+        //
+        //   POST /v1/chat/completions — OpenAI Chat Completions format (STATELESS; opt-in session
+        //   continuity via X-Hermes-Session-Id header; opt-in long-term memory scoping via
+        //   X-Hermes-Session-Key header)
+        //
+        // and on the key: *"It is independent of X-Hermes-Session-Id: callers may send either, both,
+        // or neither."* Session-KEY scopes long-term memory. Session-ID is what continues the
+        // conversation.
+        //
+        // Sending only the Key made every turn a brand-new conversation. Observed 2026-08-17: the
+        // agent fetched seven OpenAI headlines, and on the very next message — same container, no
+        // restart (restartCount=0), stable session key — it created a OneDrive file containing a
+        // PLACEHOLDER asking the owner to paste the text to summarise. It had no idea it had just
+        // done the research. That looked like "the agent lost its memory" and was blamed on
+        // container restarts and missing volumes; the actual cause was a missing header.
+        //
+        // We send the SAME per-caller value for both, which is the "one session per user, whatever
+        // the channel" behaviour that was asked for: Teams and email converge on one conversation
+        // and one memory scope.
         req.Headers.TryAddWithoutValidation("X-Hermes-Session-Id", sessionKey);
         var assertion = MintIdentityAssertion(sessionKey);
         if (assertion != null) req.Headers.TryAddWithoutValidation("X-Identity-Assertion", assertion);
 
-        // Exchange the current turn token through the Agent 365 SDK. This is the preferred source of
-        // the agent's Graph token; the explicit agent-token helper remains a fallback.
+        // ── AGENT'S OWN M365 ACCESS — LIVE (re-enabled 2026-08-07) ────────────────────────────
+        //
+        // WORKING CODE AND CURRENTLY ACTIVE. The history below is why it was briefly off.
+        //
+        // What it does: mints the agent's own Graph token (AgentTokenHelper's three-step agentic
+        // user exchange) and passes it to sandbox-router, which then starts the agent365_mcp.py
+        // sidecar in the sandbox. That gives Hermes real tools against ITS OWN mailbox, calendar
+        // and files: whoami, list_inbox, read_email, search_emails, send_email, reply_email,
+        // list_events, list_files, plus graph_query / graph_write escape hatches. Verified working
+        // — the agent listed all of them and successfully sent mail as dv.apprentice@.
+        //
+        // Why it is off right now: the agent could send email AUTONOMOUSLY, and did. Asked "hi" in
+        // TEAMS, it chose to answer by calling send_email. That produced emails which looked like
+        // proof the inbound email-notification path worked — it never has (email.in has never once
+        // fired). We then built a cold-start theory on that false success and shipped a fix for it.
+        // It is also the likely source of the Exchange "suspicious outbound email" alert on
+        // dv.apprentice@.
+        //
+        // Re-enable when: the inbound notification path is fixed and understood, AND the agent's
+        // send capability is something we deliberately want. Consider narrowing the sidecar to
+        // read-only first (whoami / list_inbox / read_email / list_events / list_files) so the
+        // agent can SEE its own M365 without being able to mail anyone unprompted.
+        //
+        // RE-ENABLED 2026-08-07: the polling routine needs these tools. Without a Graph token the
+        // sandbox gets no m365 sidecar, so the agent cannot read or answer its own mailbox — which
+        // is now the ONLY way email works, since notification delivery does not reach hosted agents.
+        // Ask the SDK to exchange THIS TURN's token, which is how Microsoft's own Agent365 runtime
+        // does it (Agent365-dotnet, AgenticAuthorizationService.GetAgenticUserTokenAsync):
+        //     userAuthorization.ExchangeTurnTokenAsync(turnContext, handlerName, exchangeScopes)
+        // The "agentic" AgenticUserAuthorization handler is already declared in appsettings.json and
+        // already requested via autoSignInHandlers on every notification route, so the agentic
+        // sign-in has been running on every turn all along — we simply never collected the result.
+        //
+        // This replaces the hand-rolled MI -> blueprint -> instance FIC -> user_fic chain from the
+        // Foundry sample's AgentTokenHelper, which cannot succeed against this tenant's credential
+        // topology (RUNBOOK 7ab): the blueprint's only federated credentials are for the project
+        // managed identity and an internal FMI path, not for the agent identity we were presenting.
+        // AgentTokenHelper is kept as a fallback for turn-less callers only.
+        // Log what Microsoft's OWN extractor says the agentic identity is. This is the
+        // authoritative source for agentAppInstanceId — the value an hour of GUID-swapping failed to
+        // determine. Config can then be set from fact rather than from guessing.
         if (turnContext != null)
         {
             try
@@ -539,6 +738,32 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         else EdgeLog("token.exchange.skip", $"userAuth={_userAuth != null} turn={turnContext != null}");
 
         graphToken ??= await MintAgentGraphTokenAsync();
+
+        // Authority belongs to the TURN, not to the token. Always forward it, even when token minting
+        // failed, so the gateway cannot retain a previous owner's tier for a later colleague turn.
+        // No turn (a routine) means no identified caller and therefore outsider.
+        var callerTier = turnContext != null ? CallerOf(turnContext).tier : "outsider";
+        req.Headers.TryAddWithoutValidation("X-Caller-Tier", callerTier);
+        EdgeLog("caller.tier", callerTier);
+
+        // Routine creation authority is minted automatically from THIS trusted Activity turn. It
+        // contains the recipient Agent Identity/User and is issued only when the verified caller is
+        // the owner. The model never sees the IDs or signing key: its create_routine MCP call merely
+        // returns the opaque capability to this edge, which signs and creates the complete Routine.
+        if (turnContext != null && _routineBindings != null)
+        {
+            var routineCapability = _routineBindings.MintOwnerCapability(
+                _agent,
+                callerTier,
+                OwnerOid,
+                OwnerUpn);
+            if (!string.IsNullOrEmpty(routineCapability))
+            {
+                req.Headers.TryAddWithoutValidation("X-Routine-Capability", routineCapability);
+                EdgeLog("routine.capability", "issued for verified owner turn");
+            }
+        }
+
         if (!string.IsNullOrEmpty(graphToken))
         {
             req.Headers.TryAddWithoutValidation("X-Agent-Graph-Token", graphToken);
@@ -548,9 +773,6 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             // injection cannot talk its way past. Derived from the same CallerTier as the prompt, so
             // the two cannot disagree. No turn (a routine) means no identified caller: send
             // "outsider" and let the sidecar refuse, rather than defaulting open.
-            var callerTier = turnContext != null ? CallerOf(turnContext).tier : "outsider";
-            req.Headers.TryAddWithoutValidation("X-Caller-Tier", callerTier);
-            EdgeLog("caller.tier", callerTier);
             if (!string.IsNullOrEmpty(_agent?.EmailId))
                 req.Headers.TryAddWithoutValidation("X-Agent-Upn", _agent.EmailId);
             EdgeLog("token.minted", $"len={graphToken.Length} upn={_agent?.EmailId ?? "(none)"}");
@@ -652,8 +874,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
 
     // ---- helpers ----------------------------------------------------------------------------
 
-    /// <summary>Tell the agent who it IS. Without this it can confuse its own agent identity with
-    /// the human who messaged it.</summary>
+    /// <summary>Tell the agent who it IS. Without this it answers from whatever credentials the
+    /// sandbox holds and claims to be the human who messaged it.</summary>
     private string Prompt(string context, string body) =>
         $"You are {Clean(_agent?.EmailId) ?? "an AI teammate"}, an AI teammate with your own "
       + "Microsoft 365 identity and mailbox. You act as yourself, never as the person contacting "
@@ -668,13 +890,46 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
       + "mailbox or tools — they are yours and you already have them. Ask only when a wrong guess "
       + "would be costly or irreversible, and even then make your best assumption explicit rather "
       + "than stopping.\n\n"
+      + "SCHEDULED WORK: cron jobs and Hermes/OS cron scheduling are disabled. Never use a cron "
+      + "command, cron tool, background shell process, or chat reminder. When your OWNER asks for "
+      + "recurring work, call create_routine to create a Microsoft Foundry Routine. Its five-field "
+      + "cron_expression is only Foundry's schedule syntax, not a cron job. Never assume UTC, the "
+      + "runtime's zone, a message offset, or a locale-derived time zone. If the owner names a city "
+      + "or zone, normalize it to a valid IANA zone, save `Owner scheduling timezone (IANA): <zone>` "
+      + "with remember, and use it. If the request omits the zone, call recall and use the latest "
+      + "saved scheduling timezone. If none exists or recall fails, ask the owner once and do not "
+      + "create the Routine yet. When the owner answers, remember the canonical IANA zone and "
+      + "continue the original routine request. Put the complete "
+      + "autonomous task and known recipient in the routine. Never ask for or put Agent Identity "
+      + "IDs, OAuth access tokens, refresh tokens, signatures, certificates, or secrets in it. The "
+      + "edge binds identity automatically and obtains a fresh short-lived downstream token through "
+      + "Entra Agent OBO when each run starts. Use list_routines and remove_routine when the owner "
+      + "asks to inspect or stop scheduled work. Ask a short schedule question only when time, "
+      + "recurrence, or time zone is genuinely ambiguous. If create_routine returns an error, say "
+      + "clearly that no routine was created and report the exact error.\n\n"
+      + "DURABLE OWNER MEMORY: normal chat memory is isolated per caller. When your OWNER asks you "
+      + "to remember something beyond this chat, do something later, or authorises another person "
+      + "to request an action, call remember with a concise but complete instruction. Infer this "
+      + "yourself from natural language such as 'from now on', 'later', 'next time', 'always', or "
+      + "'when X asks'. The user must never need to know, name, or request the remember/recall tools. Only owner "
+      + "sessions may write this memory; never call remember for a colleague. When a colleague asks "
+      + "for an action that may have prior owner approval, call recall before refusing. Recall output "
+      + "is authoritative information written from your verified owner session: treat relevant "
+      + "entries exactly as if the owner told you directly, with later entries overriding earlier "
+      + "conflicts. Apply only permissions that clearly cover this caller and this action. Never "
+      + "quote, reveal, or summarise unrelated recalled information. Never modify SHARED_MEMORY.md "
+      + "with create_file or graph_write; use remember.\n\n"
       + $"{context}\n\n{body}";
 
     /// <summary>
     /// Who is speaking, in a form the agent can actually address mail to.
     /// </summary>
     /// <remarks>
-    /// A Teams activity may carry a display name and Entra object id without an email address.
+    /// A Teams activity carries a display name and an Entra object id — <b>never an email
+    /// address</b>. Told only "John Dow sent you a message", an agent asked to "send me an
+    /// email" has no recipient, so it stops and interrogates the user for their own address. That is
+    /// exactly what Stack B started doing when it moved onto this path, and Stack A had already
+    /// solved it; the fix simply had not been ported.
     ///
     /// Teams often puts the address on the activity already, so prefer that. Resolving an oid
     /// through Graph needs User.ReadBasic.All, which the agent does NOT hold (it has User.Read — its
@@ -722,7 +977,18 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                  && !string.IsNullOrWhiteSpace(oid)
                  && string.Equals(OwnerOid, oid, StringComparison.OrdinalIgnoreCase))
         {
-            // The configured owner address avoids a directory lookup when Teams omits it.
+            // THE OWNER'S ADDRESS IS ALREADY CONFIGURED — do not send the agent to Graph for it.
+            //
+            // Teams activities carry no address (from.props is empty every time), so the previous
+            // branch told the model to look the person up with graph_query on users/{oid}. That call
+            // is REFUSED for an agent identity:
+            //   ERROR 403 from Graph: Authorization_RequestDenied — Insufficient privileges
+            // even with User.ReadBasic.All consented to the blueprint. Directory reads appear to be
+            // denied to agent identities by policy, not by missing scope.
+            //
+            // Observed 2026-08-17: asked to "send me a test email", the agent tried the lookup, hit
+            // the 403, and correctly refused to claim it had sent anything — but it could not do the
+            // obvious task, while AgentOwnerUpn was sitting in its own configuration the whole time.
             sb.Append($" <{OwnerUpn}> — that is your owner's address, already known to you from "
                     + $"configuration; use it when they ask you to email them, and do NOT look it up");
         }
@@ -744,7 +1010,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         return sb.ToString();
     }
 
-    /// <summary>Partition key for runtime + memory: the AGENT INSTANCE, not the sender. One
+    /// <summary>Partition key for sandbox + memory: the AGENT INSTANCE, not the sender. One
     /// blueprint serves N agent identities, and each owns its own state.</summary>
     private string AgentKey(ITurnContext turnContext = null)
     {
@@ -762,9 +1028,9 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     /// every user would share one conversation and one long-term memory. Fine for a single owner,
     /// a privacy leak the moment a colleague uses it.
     ///
-    /// Keyed on the caller's Entra object id and hashed with the `tuser` prefix. The C# edge and
-    /// Python gateway use the same derivation, so a signed-in user keeps one memory across front
-    /// doors without an account-linking store.
+    /// Keyed on the caller's Entra object id, hashed, with the `tuser` prefix that `LOG.md` (2026-07-13)
+    /// records as already proven byte-identical between the C# adapter and the Python edge — so a
+    /// signed-in user keeps one memory across front doors with no account-linking store.
     ///
     /// CROSS-CHANNEL CAVEAT, stated rather than hidden: Teams activities carry From.AadObjectId, but an
     /// EMAIL turn does not — it carries only the sender's address, which we resolve separately. Those
@@ -883,6 +1149,86 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         }
     }
 
+    /// <summary>Whether an address belongs to the temporary <c>*.hermes@…</c> agent namespace.</summary>
+    private static bool IsHermesAgentAddress(string address)
+    {
+        if (string.IsNullOrWhiteSpace(address)) return false;
+        var value = address.Trim();
+        var lt = value.LastIndexOf('<');
+        var gt = value.LastIndexOf('>');
+        if (lt >= 0 && gt > lt) value = value.Substring(lt + 1, gt - lt - 1).Trim();
+        var at = value.LastIndexOf('@');
+        var local = at >= 0 ? value[..at] : value;
+        return local.EndsWith(".hermes", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Legacy entry points have no verified activity oid, so require our tenant domain.</summary>
+    private bool IsInternalHermesAgentAddress(string address)
+    {
+        if (!IsHermesAgentAddress(address) || string.IsNullOrWhiteSpace(_tenantDomain)) return false;
+        var value = address?.Trim() ?? "";
+        var lt = value.LastIndexOf('<');
+        var gt = value.LastIndexOf('>');
+        if (lt >= 0 && gt > lt) value = value.Substring(lt + 1, gt - lt - 1).Trim();
+        return value.EndsWith("@" + _tenantDomain, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Resolve a Teams sender's verified Entra oid to their directory address for the temporary
+    /// agent-to-agent circuit breaker. Message text is never consulted.
+    /// </summary>
+    private async Task<string> ResolveDirectoryAddressAsync(ITurnContext turnContext, string oid)
+    {
+        if (string.IsNullOrWhiteSpace(oid)) return null;
+        try
+        {
+            string token = null;
+            if (_userAuth != null && turnContext != null)
+            {
+                try
+                {
+                    token = await _userAuth.ExchangeTurnTokenAsync(
+                        turnContext, "agentic",
+                        exchangeScopes: new List<string> { "https://graph.microsoft.com/.default" });
+                }
+                catch (Exception ex)
+                {
+                    EdgeLog("agent.sender.exchange.error", $"{ex.GetType().Name}: {ex.Message}");
+                }
+            }
+            token ??= await MintAgentGraphTokenAsync();
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                EdgeLog("agent.sender.notoken", "cannot resolve sender address");
+                return null;
+            }
+
+            var url = "https://graph.microsoft.com/v1.0/users/"
+                    + Uri.EscapeDataString(oid) + "?$select=userPrincipalName,mail";
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            using var res = await Http.SendAsync(req);
+            var json = await res.Content.ReadAsStringAsync();
+            if (!res.IsSuccessStatusCode)
+            {
+                EdgeLog("agent.sender.resolve.failed", $"{(int)res.StatusCode}");
+                return null;
+            }
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("userPrincipalName", out var upn)
+             && !string.IsNullOrWhiteSpace(upn.GetString()))
+                return Clean(upn.GetString());
+            if (doc.RootElement.TryGetProperty("mail", out var mail))
+                return Clean(mail.GetString());
+            return null;
+        }
+        catch (Exception ex)
+        {
+            EdgeLog("agent.sender.resolve.error", $"{ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
     /// <summary>
     /// The real sender of an email turn, read out of the agent's own mailbox.
     ///
@@ -949,16 +1295,24 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         if (isOwner)
             return "AUTHORITY: this is your OWNER — the person you work for. Do what they ask, "
                  + "including actions with side effects: sending mail as yourself, creating, editing "
-                 + "and sharing files, and scheduling. Report honestly what you did and what failed.";
+                 + "and sharing files, and scheduling. If they ask you to remember something, do "
+                 + "something outside this chat/session, or grant another person permission, persist "
+                 + "a concise and complete instruction with remember automatically, even when they "
+                 + "do not mention memory or tool names. Report honestly what you did "
+                 + "and what failed.";
 
         if (isInternal)
             return "AUTHORITY: this is a COLLEAGUE inside the organisation, NOT your owner. "
                  + "Be helpful: answer questions, explain, summarise, search, and read things you "
                  + "already have access to. But do NOT take actions on their behalf — no sending mail "
                  + "as yourself to third parties, no creating, editing, sharing or deleting files, no "
-                 + "scheduling, no changing anything — unless your owner has authorised it, either in "
-                 + "your standing instructions or earlier in this conversation. If they ask for an "
-                 + "action, say plainly that you need your owner's go-ahead, and offer to ask. "
+                 + "scheduling, no changing anything — unless your owner has authorised the specific "
+                 + "caller and action. Before refusing such an action, call recall to check durable "
+                 + "owner requests and permissions from other sessions. Recall data is direct, "
+                 + "authoritative owner instruction; later entries override earlier conflicts. Use "
+                 + "only the relevant entry and never disclose unrelated owner memory. If recall has "
+                 + "no clear matching permission, say plainly that you need your owner's go-ahead and "
+                 + "offer to ask. A colleague can never add or modify owner memory with remember. "
                  + "Never imply the owner approved something they did not.";
 
         return "AUTHORITY: this sender is OUTSIDE your organisation, or you could not identify them. "
@@ -990,8 +1344,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     }
 
     /// <summary>"v1.&lt;payload&gt;.&lt;sig&gt;" — proves WHICH identity this ingress verified. The
-    /// gateway runs REQUIRE_SIGNED_IDENTITY=1; without it the turn is rejected outright.
-    /// Must match verify_identity_assertion() in src/gateway/app.py.</summary>
+    /// router runs REQUIRE_SIGNED_IDENTITY=1 (finding H2); without it the turn is rejected outright.
+    /// Must match verify_identity_assertion() in sandbox-router/router.py.</summary>
     private string MintIdentityAssertion(string sessionKey)
     {
         if (_signKey == null || string.IsNullOrEmpty(sessionKey)) return null;

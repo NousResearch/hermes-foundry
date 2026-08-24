@@ -229,7 +229,8 @@ autopilot sample. The modifications were not cosmetic. They added or corrected:
 - an Azure Bot and Agent 365 blueprint;
 - both `activity` and `responses` container protocols;
 - `BotServiceTenant` authorization for Microsoft 365 delivery;
-- Graph and native Microsoft 365 MCP permission grants;
+- Graph permission grants, plus optional first-party Microsoft 365 MCP grants for the explicit
+  non-production diagnostic mode;
 - matching inheritable Graph permissions on the blueprint;
 - the complete Hermes identity, owner, model, tool, and routing environment; and
 - safe post-provision creation of the initial hosted-agent version.
@@ -255,8 +256,9 @@ The installer must perform these operations in this order:
 4. Create the hosted agent and its first version. The version must expose both `activity` and
    `responses`, use `BotServiceTenant`, and include the complete environment listed in the
    repository README.
-5. Give the hosted compute/agent identity `Cognitive Services OpenAI User` on the Foundry account.
-   Without this grant, the container can start and receive a turn but model calls fail with 401.
+5. Configure `AZURE_FOUNDRY_BASE_URL` to the hosted agent's project-scoped OpenAI endpoint. Hosted
+   agent instances receive inference access through that project path; using the account-level
+   Cognitive Services endpoint instead creates an avoidable per-instance RBAC requirement.
 6. Create and connect the Agent 365 blueprint/Azure Bot, grant the required Microsoft 365
    permissions, and mark the matching Graph scopes inheritable.
 7. Emit only a redacted deployment summary. Store tenant IDs, resource IDs, blueprint IDs, owner
@@ -284,10 +286,11 @@ Doing only the first can make a permission look correct in Entra while the Agent
 403. This was the root cause of the original OneDrive failure after `Files.ReadWrite.All` had already
 been granted.
 
-The exact permission set must be reviewed per tenant. The working POC uses Graph capabilities for
-mail, calendar, files, sites, user lookup, and sharing, plus native Microsoft 365 MCP scopes for
-Mail, Calendar, Teams, OneDrive/SharePoint, Word, and Excel. Treat generic Graph writes as a
-privileged capability and remove anything the deployment does not need.
+The exact permission set must be reviewed per tenant. The normal Hermes path uses Graph capabilities
+for mail, calendar, files, sites, user lookup, sharing, and document operations. First-party
+Microsoft 365 MCP scopes are needed only if the explicit non-production `ResponsesApi` diagnostic
+mode is enabled. Treat generic Graph writes as a privileged capability and remove anything the
+deployment does not need.
 
 After consent, verify effective inheritance per resource. A summary such as "4 of 5 effective" is
 not success if Microsoft Graph is the missing resource.

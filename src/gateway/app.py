@@ -1,12 +1,27 @@
-"""Loopback gateway for Hermes Foundry.
+"""Minimal gateway for the Foundry-hosted stack.
 
-The edge talks to two endpoints:
+WHY THIS EXISTS
+---------------
+The Foundry thin edge (HermesRouterAgentLogicService) talks to exactly two endpoints:
 
     POST {RouterUrl}/v1/chat/completions   the turn itself
     POST {RouterUrl}/v1/edge-log           our own out-of-band telemetry
 
-The gateway forwards chat requests to Hermes, carries short-lived agent credentials to the local
-sidecar, handles attachment handoff, and exports edge diagnostics.
+In the full canonical architecture both are served by `sandbox-router`, which also spawns a
+per-user ACA sandbox. That router hard-requires the ACA Sandboxes layer (it reads
+ACA_SANDBOX_GROUP, HERMES_DISK_ID and friends with os.environ[...] at import time, so it will not
+even start without them), and that preview is not enabled on this subscription yet.
+
+Pointing RouterUrl straight at Hermes would make chat work, because Hermes serves an
+OpenAI-compatible /v1/chat/completions and takes the same Bearer token. But /v1/edge-log would
+404, and that endpoint is the ONLY instrument that has ever told us the truth about whether an
+inbound request reaches the container at all. Foundry's own :logstream returns session_not_found
+for us, so a hosted agent is otherwise completely dark. Every real conclusion we have about the
+email path came from counting `http.in` and `email.in` lines here. Losing it would make the
+Stack A / Stack B comparison unfalsifiable.
+
+So this is a deliberate stand-in: same two endpoints, same auth, no sandbox layer. Swap it for
+sandbox-router once ACA Sandboxes is enabled and nothing on the edge side needs to change.
 
 Standard library only, on purpose. No pip install, no lockfile, nothing to audit.
 """
@@ -33,8 +48,8 @@ OUTBOX = os.environ.get("AGENT_OUTBOX", "/tmp/agent-outbox")
 UPSTREAM_TIMEOUT = int(os.environ.get("UPSTREAM_TIMEOUT", "900"))
 
 # How long a turn will wait for a cold Hermes before giving up (see the retry loop in do_POST).
-# 0 keeps fail-fast behavior available. This deployment sets a positive wait because Hermes starts
-# in this same container and may still be warming when the edge becomes ready.
+# 0 preserves the original fail-fast behaviour for the split ACA deployment, where Hermes is a
+# separate always-on container and "connection refused" really does mean broken.
 HERMES_COLD_START_WAIT = int(os.environ.get("HERMES_COLD_START_WAIT", "0"))
 
 # Where Hermes' stdout is teed, so a 502 can carry its tail (see do_POST). Empty = feature off.
@@ -43,14 +58,22 @@ HERMES_LOG_PATH = os.environ.get("HERMES_LOG_PATH", "/tmp/hermes.log")
 # Headers the edge sets that Hermes/the router care about. Forwarded verbatim.
 PASSTHROUGH = (
     "x-hermes-session-key",
+    # ⚠️ SESSION-ID MUST BE HERE OR THE AGENT HAS NO MEMORY.
+    #
     # These are two different headers with two different jobs, per Hermes'
     # gateway/platforms/api_server.py: Session-KEY scopes long-term memory, Session-ID is what
     # continues the conversation ("Allow caller to continue an existing session by passing
     # X-Hermes-Session-Id. When provided, history is loaded from state.db instead of from the
     # request body.").
     #
+    # On 2026-08-17 the edge was taught to send Session-Id and this list was not updated, so the
+    # gateway silently dropped it one hop later and every Teams turn was still a fresh conversation.
+    # The symptom was indistinguishable from the original bug — the agent fetched seven headlines and
+    # then asked the owner what to summarise — and it cost a second round of diagnosis, including a
+    # wrong theory that the session was pinned to an old agent version.
+    #
     # This list is an ALLOW-LIST: anything not named here is stripped. Adding a header at the edge is
-    # therefore only half a change; update and test both ends.
+    # therefore only half a change. Grep both ends.
     "x-hermes-session-id",
     "x-identity-assertion",
     "x-agent-graph-token",
@@ -60,7 +83,7 @@ PASSTHROUGH = (
 
 # Last agent Graph token seen on a turn, held in memory only. Served to the m365 sidecar via
 # GET /v1/agent-token. Never written to disk, never logged.
-_agent_token = {"token": "", "upn": "", "tier": "outsider"}
+_agent_token = {"token": "", "upn": "", "tier": "outsider", "routine_capability": ""}
 
 # Files the sidecar produced during the current turn that belong on the reply as attachments.
 #
@@ -113,10 +136,28 @@ def log(*parts):
     _ship(" ".join(str(p) for p in parts))
 
 
-# ---- optional Application Insights diagnostics ------------------------------------------------
-# Use a non-reserved explicit variable first and fall back to the platform connection string. The
-# shipper is standard-library-only, fire-and-forget, and never allowed to break a turn.
-_AI_CS = (os.environ.get("FULL_FOUNDRY_AI_CONNECTION_STRING", "")
+# ---- ship our own log lines to Application Insights -------------------------------------------
+# WHY THIS EXISTS: in a Foundry hosted agent, stdout is effectively unreadable for us. `:logstream`
+# returns 404 for every version we tried, and the session `files` API returns 403
+# `session_not_accessible` because a Teams-created session belongs to the CALLER's isolation key, not
+# ours. What does reach Application Insights is only the .NET framework's own ILogger output — so we
+# could see "Received message activity" and every outbound HTTP call, but not one line of our own
+# diagnostics, and not Hermes' reply.
+#
+# The cost of that, 2026-08-17: hours on hfull's Teams turns. Every layer was verified healthy
+# (message arrives, edge forwards, model call 200, replies delivered 201/202) and the owner still saw
+# only "HTTP 401: Principal does not have access to API/Operation." — with no way to learn which call
+# produced it. Exactly the same shape as the morning's copyright-filter hunt, where instrumenting the
+# sidecar found the cause in one turn after hours of wrong theories.
+#
+# The platform injects APPLICATIONINSIGHTS_CONNECTION_STRING. Standard library only, fire-and-forget,
+# and it must never break a turn: a failed ship is swallowed.
+# APPLICATIONINSIGHTS_CONNECTION_STRING is RESERVED — the platform rejects it in a version env
+# ("reserved for platform use ... per container-image-spec"), and it is also NOT actually present
+# in our container: during the v11 turn there was zero egress to the ingestion endpoint, so this
+# shipper never fired. Read our own non-reserved name first, then fall back to the platform one in
+# case a future runtime does inject it.
+_AI_CS = (os.environ.get("PLANF_AI_CONNECTION_STRING", "")
           or os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING", ""))
 _AI_IKEY = ""
 _AI_URL = ""
@@ -139,12 +180,12 @@ def _ship(message: str, level: int = 1):
                 "name": "Microsoft.ApplicationInsights.Message",
                 "time": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
                 "iKey": _AI_IKEY,
-                "tags": {"ai.cloud.role": "hermes-full-foundry-gateway",
-                         "ai.cloud.roleInstance": os.environ.get("HOSTNAME", "full-foundry")},
+                "tags": {"ai.cloud.role": "plan-f-gateway",
+                         "ai.cloud.roleInstance": os.environ.get("HOSTNAME", "plan-f")},
                 "data": {"baseType": "MessageData",
                          "baseData": {"ver": 2, "message": message[:8000],
                                       "severityLevel": level,
-                                      "properties": {"source": "hermes-full-foundry-gateway"}}},
+                                      "properties": {"source": "plan-f-gateway"}}},
             }).encode()
             req = urllib.request.Request(_AI_URL, data=body,
                                         headers={"Content-Type": "application/json"})
@@ -186,8 +227,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, b'{"ok":true}')
             return
         # The m365 MCP sidecar polls this for the agent's current Graph token. The sidecar sits next
-        # to Hermes as a long-lived process, so it cannot rely on a token captured in an environment
-        # variable at container startup.
+        # to Hermes as a long-lived container, so it cannot take the token from an env var captured
+        # at start the way the per-turn sandbox sidecar does.
         #
         # Deliberately in-memory and never written to disk: this is a user token for the AGENT, and
         # persisting it would create the standing credential the whole design avoids. If no turn has
@@ -197,11 +238,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(401, b'{"error":"unauthorized"}')
                 return
             tok = _agent_token.get("token", "")
-            if not tok:
-                self._send(404, b'{"error":"no agent token seen yet"}')
+            routine_capability = _agent_token.get("routine_capability", "")
+            if not tok and not routine_capability:
+                self._send(404, b'{"error":"no agent turn authority seen yet"}')
                 return
             self._send(200, json.dumps({"token": tok, "upn": _agent_token.get("upn", ""),
-                                        "tier": _agent_token.get("tier", "outsider")}).encode())
+                                        "tier": _agent_token.get("tier", "outsider"),
+                                        "routine_capability": routine_capability}).encode())
             return
         self._send(404, b'{"error":"not found"}')
 
@@ -219,8 +262,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # ---- telemetry sink -------------------------------------------------------------------
-        # `http.in` means a request reached the container; `email.in` means an agentic email
-        # notification reached the handler.
+        # This is the whole reason this service exists. `http.in` means a request reached the
+        # container; `email.in` means an agentic email notification reached our handler. As of
+        # 2026-08-07 the lifetime count of `email.in` across every Foundry-hosted build is zero.
         if self.path == "/v1/edge-log":
             try:
                 d = json.loads(raw or b"{}")
@@ -261,18 +305,27 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/chat/completions":
             _discard_stale_attachments()
 
+            # Caller authority is per request. Refresh it even if this turn has no Graph token;
+            # otherwise a failed mint on a colleague turn could inherit the previous owner's tier.
+            # Clear the token too: using a stale credential from a different turn is worse than
+            # reporting that Microsoft 365 is temporarily unavailable.
+            _agent_token["tier"] = self.headers.get("X-Caller-Tier") or "outsider"
+            # Owner-only, short-lived routine creation authority. Clear on every request so a
+            # colleague turn cannot inherit the previous owner's capability in this long-lived
+            # process. The sidecar can only return this opaque value to the edge; it cannot mint or
+            # alter the signed Agent Identity/User binding.
+            _agent_token["routine_capability"] = self.headers.get("X-Routine-Capability") or ""
             # Capture the agent's Graph token as it passes through, so the m365 sidecar can use the
             # SAME credential the edge minted for this turn rather than holding a blueprint secret
             # of its own. Keeps "the agent never holds a credential" true for the tool path too.
             tok = self.headers.get("x-agent-graph-token")
             if tok:
                 _agent_token["token"] = tok
-                # Caller tier travels with the token: the sidecar refuses data tools when the
-                # turn was started by someone outside the organisation. Absent header means
-                # unidentified, which is treated as outsider — fail closed.
-                _agent_token["tier"] = self.headers.get("X-Caller-Tier") or "outsider"
                 _agent_token["upn"] = self.headers.get("x-agent-upn", "") or _agent_token["upn"]
                 log(f"[edge] agent.token.refreshed | upn={_agent_token['upn'] or '?'}")
+            else:
+                _agent_token["token"] = ""
+                log("[edge] agent.token.cleared | current turn supplied none")
 
             req = urllib.request.Request(
                 f"{HERMES_URL}/v1/chat/completions", data=raw, method="POST"
@@ -286,8 +339,10 @@ class Handler(BaseHTTPRequestHandler):
                     req.add_header(h, v)
             # WAIT OUT A COLD HERMES instead of 502-ing immediately.
             #
-            # Foundry marks the session ready as soon as the edge binds, while Hermes may still be
-            # booting (skills sync, Playwright warm-up).
+            # Single-container (Plan F) topology: Foundry marks the session ready as soon as the EDGE
+            # binds its port, then routes a request straight away — while Hermes is still booting
+            # (skills sync, Playwright warm-up). Every such request came back
+            # "Connection refused" -> 502 -> the user saw "The gateway returned 502."
             # Readiness cannot simply wait for Hermes: Hermes' boot exceeds the platform's readiness
             # timeout, so gating on it fails the session instead. This is the only layer that can
             # absorb the gap. It also covers Hermes restarting under supervision.
@@ -301,7 +356,12 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     with urllib.request.urlopen(req, timeout=UPSTREAM_TIMEOUT) as r:
                         payload = r.read()
-                        # Log a truncated preview for diagnostics; this is not a transcript store.
+                        # Log WHAT HERMES ACTUALLY ANSWERED. The gateway is the only component that
+                        # sees this body before it is turned into a Teams message, and on 2026-08-17
+                        # the owner's reply was "HTTP 401: Principal does not have access to
+                        # API/Operation." while every layer reported success — because nothing logged
+                        # the answer. Truncated; this is the owner's own content and a diagnostic aid,
+                        # not a transcript store.
                         try:
                             _p = json.loads(payload)
                             _txt = (_p.get("choices") or [{}])[0].get("message", {}).get("content", "")
@@ -315,8 +375,10 @@ class Handler(BaseHTTPRequestHandler):
                         # Hermes returns HTTP 200 with the failure in the message body, so this is a
                         # "successful" response carrying
                         #   "HTTP 401: Principal does not have access to API/Operation."
-                        # The Entra token may not be usable for the first few seconds after cold start,
-                        # so retry this specific transient once while the cold-start budget remains.
+                        # The sandbox's Entra token is not usable for the first few seconds after a
+                        # cold start, so Hermes' first model call is rejected even though every layer
+                        # is healthy. Demonstrated by the owner 2026-08-17: three identical Teams
+                        # messages gave 401, 401, then a normal answer.
                         #
                         # We already wait out a cold start at the CONNECTION level; this is the same
                         # race one layer up, and it deserves the same treatment. Retried at most once
@@ -353,7 +415,7 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     log(f"[edge] hermes.unreachable | {type(e).__name__}: {e}")
                     # Include the tail of Hermes' own log in the 502 body. In a Foundry hosted
-                    # container :logstream is the primary debugging window, and sessions can go idle before it can
+                    # sandbox :logstream is the only window in, and sessions go idle before it can
                     # be attached — so the reply itself has to carry the diagnosis or the failure
                     # is simply undebuggable from outside.
                     tail = ""

@@ -1,11 +1,18 @@
 import importlib.util
+import inspect
 import io
+import json
 import pathlib
 import sys
 import types
 import unittest
 import urllib.error
 from unittest import mock
+
+try:
+    from docx import Document
+except ImportError:
+    Document = None
 
 
 class _FakeFastMCP:
@@ -29,7 +36,7 @@ def _load_sidecar():
         "mcp.server.fastmcp": fastmcp,
     }):
         path = pathlib.Path(__file__).parents[1] / "src" / "sidecar" / "agent365_mcp.py"
-        spec = importlib.util.spec_from_file_location("full_foundry_agent365_mcp_test", path)
+        spec = importlib.util.spec_from_file_location("hfull_agent365_mcp_test", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
@@ -50,6 +57,52 @@ class GraphOneDriveTests(unittest.TestCase):
         self.assertFalse(hasattr(self.m, "list_files_mcp"))
         self.assertFalse(hasattr(self.m, "_odsp_tool_call"))
 
+    def test_create_routine_returns_complete_task_to_edge_without_identity_fields(self):
+        with mock.patch.object(self.m, "_routine_control", return_value="created") as control:
+            result = self.m.create_routine(
+                "daily-mail",
+                "Summarize my own inbox and email the summary to the owner.",
+                "0 7 * * *",
+                "Europe/Nicosia",
+            )
+
+        control.assert_called_once_with("create", {
+            "name": "daily-mail",
+            "task": "Summarize my own inbox and email the summary to the owner.",
+            "cronExpression": "0 7 * * *",
+            "timeZone": "Europe/Nicosia",
+        })
+        self.assertEqual(result, "created")
+
+    def test_create_routine_documents_foundry_only_scheduling_and_fresh_obo(self):
+        guidance = self.m.create_routine.__doc__ or ""
+        self.assertIn("Cron jobs", guidance)
+        self.assertIn("Foundry Routines API", guidance)
+        self.assertIn("fresh short-lived downstream token", guidance)
+        self.assertIn("Never ask for or put", guidance)
+        self.assertIn("call recall", guidance)
+        self.assertIn("Owner scheduling timezone (IANA)", guidance)
+
+    def test_create_routine_requires_an_explicit_timezone(self):
+        parameter = inspect.signature(self.m.create_routine).parameters["time_zone"]
+        self.assertIs(parameter.default, inspect.Signature.empty)
+
+    def test_routine_management_fails_closed_without_owner_capability(self):
+        with mock.patch.object(self.m, "_routine_capability", return_value=""), \
+             mock.patch.object(self.m.urllib.request, "urlopen") as urlopen:
+            result = self.m._routine_control("list", {})
+
+        urlopen.assert_not_called()
+        self.assertIn("ROUTINE NOT CHANGED", result)
+        self.assertIn("verified owner", result)
+
+    def test_remove_routine_uses_name_only_and_never_accepts_identity_ids(self):
+        with mock.patch.object(self.m, "_routine_control", return_value="removed") as control:
+            result = self.m.remove_routine("daily-mail")
+
+        control.assert_called_once_with("delete", {"name": "daily-mail"})
+        self.assertEqual(result, "removed")
+
     def test_list_files_uses_graph_and_clamps_page_size(self):
         with mock.patch.object(self.m, "_graph", return_value='{"value":[]}') as graph:
             result = self.m.list_files(top=500)
@@ -63,14 +116,55 @@ class GraphOneDriveTests(unittest.TestCase):
 
     def test_search_files_uses_graph_and_escapes_odata_query(self):
         with mock.patch.object(self.m, "_graph", return_value='{"value":[]}') as graph:
-            result = self.m.search_files("Alex's plan", top=7)
+            result = self.m.search_files("John's plan", top=7)
 
         graph.assert_called_once_with(
             "GET",
-            "me/drive/root/search(q='Alex%27%27s%20plan')?$top=7"
+            "me/drive/root/search(q='John%27%27s%20plan')?$top=7"
             "&$select=id,name,size,lastModifiedDateTime,webUrl,folder,file",
         )
         self.assertEqual(result, '{"value":[]}')
+
+    def test_send_email_normalizes_display_name_mailbox_for_graph(self):
+        with mock.patch.object(self.m, "_graph", return_value="") as graph:
+            result = self.m.send_email(
+                "John Doe <john@example.com>", "Routine test", "Test"
+            )
+
+        graph.assert_called_once_with("POST", "me/sendMail", {
+            "message": {
+                "subject": "Routine test",
+                "body": {"contentType": "Text", "content": "Test"},
+                "toRecipients": [{"emailAddress": {
+                    "address": "john@example.com", "name": "John Doe",
+                }}],
+            },
+            "saveToSentItems": True,
+        })
+        self.assertEqual(result, "Sent.")
+
+    def test_mailbox_parser_handles_quoted_commas_and_multiple_recipients(self):
+        self.assertEqual(self.m._mailboxes(
+            '\"Doe, John\" <john@example.com>, jane@example.com'
+        ), [
+            {"emailAddress": {
+                "address": "john@example.com", "name": "Doe, John",
+            }},
+            {"emailAddress": {"address": "jane@example.com"}},
+        ])
+
+    def test_event_attendees_normalize_display_name_mailboxes(self):
+        self.assertEqual(
+            self.m._attendees(
+                "John Doe <john@example.com>", "jane@example.com"
+            ),
+            [
+                {"emailAddress": {
+                    "address": "john@example.com", "name": "John Doe",
+                }, "type": "required"},
+                {"emailAddress": {"address": "jane@example.com"}, "type": "optional"},
+            ],
+        )
 
     def test_read_file_by_item_id_uses_graph_content_endpoint(self):
         with mock.patch.object(self.m, "_graph", return_value="version 33 test") as graph:
@@ -108,6 +202,130 @@ class GraphOneDriveTests(unittest.TestCase):
         self.assertIn("FILE NOT CREATED", result)
         self.assertIn("create_docx", result)
 
+    @unittest.skipUnless(Document, "python-docx is installed in the production image")
+    def test_docx_replacement_handles_text_split_across_word_runs(self):
+        doc = Document()
+        paragraph = doc.add_paragraph()
+        paragraph.add_run("before TES").bold = True
+        paragraph.add_run("T 123 after").italic = True
+
+        count = self.m._replace_docx_paragraph(paragraph, "TEST 123", "DONE")
+
+        self.assertEqual(count, 1)
+        self.assertEqual(paragraph.text, "before DONE after")
+
+    @unittest.skipUnless(Document, "python-docx is installed in the production image")
+    def test_edit_docx_updates_same_item_with_etag_guard(self):
+        doc = Document()
+        doc.add_paragraph("Existing paragraph")
+        original = io.BytesIO()
+        doc.save(original)
+
+        with mock.patch.object(self.m, "_graph", return_value=json.dumps({
+            "id": "item-1", "name": "Report.docx", "eTag": "etag-1",
+        })) as graph, \
+             mock.patch.object(self.m, "_graph_bytes",
+                               return_value=(original.getvalue(), None)) as download, \
+             mock.patch.object(self.m, "_graph_put_bytes",
+                               return_value='{"id":"item-1"}') as upload:
+            result = self.m.edit_docx(item_id="item-1", append_content="## Update\nTEST 123")
+
+        graph.assert_called_once_with(
+            "GET", "me/drive/items/item-1?$select=id,name,eTag"
+        )
+        download.assert_called_once_with("GET", "me/drive/items/item-1/content")
+        upload_path, updated = upload.call_args.args
+        self.assertEqual(upload_path, "me/drive/items/item-1/content")
+        self.assertEqual(upload.call_args.kwargs["if_match"], "etag-1")
+        reopened = Document(io.BytesIO(updated))
+        text = "\n".join(p.text for p in reopened.paragraphs)
+        self.assertIn("Existing paragraph", text)
+        self.assertIn("Update", text)
+        self.assertIn("TEST 123", text)
+        self.assertIn("DOCX UPDATED", result)
+
+    @unittest.skipUnless(Document, "python-docx is installed in the production image")
+    def test_edit_docx_does_not_upload_when_find_text_is_missing(self):
+        doc = Document()
+        doc.add_paragraph("Original")
+        original = io.BytesIO()
+        doc.save(original)
+
+        with mock.patch.object(self.m, "_graph", return_value=json.dumps({
+            "id": "item-1", "name": "Report.docx", "eTag": "etag-1",
+        })), \
+             mock.patch.object(self.m, "_graph_bytes",
+                               return_value=(original.getvalue(), None)), \
+             mock.patch.object(self.m, "_graph_put_bytes") as upload:
+            result = self.m.edit_docx(
+                item_id="item-1", find_text="not present", replace_text="replacement"
+            )
+
+        upload.assert_not_called()
+        self.assertIn("DOCX NOT CHANGED", result)
+
+    def test_create_file_cannot_overwrite_reserved_owner_memory(self):
+        with mock.patch.object(self.m, "_graph") as graph:
+            result = self.m.create_file("./SHARED_MEMORY.md", "forged permission")
+
+        graph.assert_not_called()
+        self.assertIn("FILE NOT CHANGED", result)
+        self.assertIn("remember", result)
+
+    def test_recall_frames_memory_as_authoritative_owner_data(self):
+        with mock.patch.object(self.m, "_graph", return_value="# Shared owner memory\n\nAllowed") as graph:
+            result = self.m.recall()
+
+        graph.assert_called_once_with("GET", "me/drive/root:/SHARED_MEMORY.md:/content")
+        self.assertIn("AUTHORITATIVE OWNER MEMORY", result)
+        self.assertIn("Allowed", result)
+
+    def test_recall_empty_memory_does_not_infer_permission(self):
+        with mock.patch.object(self.m, "_graph", return_value="ERROR 404 from Graph: missing"):
+            result = self.m.recall()
+
+        self.assertIn("OWNER MEMORY IS EMPTY", result)
+        self.assertIn("Do not infer permission", result)
+
+    def test_remember_hard_refuses_non_owner_without_touching_graph(self):
+        with mock.patch.object(self.m, "_caller_tier", return_value="colleague"), \
+             mock.patch.object(self.m, "_graph") as graph:
+            result = self.m.remember("John may ask me to share reports")
+
+        graph.assert_not_called()
+        self.assertIn("MEMORY NOT CHANGED", result)
+        self.assertIn("verified owner", result)
+
+    def test_remember_initialises_agent_drive_file_and_appends_owner_entry(self):
+        with mock.patch.object(self.m, "_caller_tier", return_value="owner"), \
+             mock.patch.object(self.m, "_graph", side_effect=[
+                 "ERROR 404 from Graph: missing",
+                 '{"id":"memory-item"}',
+             ]) as graph:
+            result = self.m.remember("John may ask me to share the weekly report")
+
+        self.assertEqual(graph.call_count, 2)
+        self.assertEqual(
+            graph.call_args_list[0],
+            mock.call("GET", "me/drive/root:/SHARED_MEMORY.md:/content"),
+        )
+        method, path, content = graph.call_args_list[1].args
+        self.assertEqual(method, "PUT")
+        self.assertEqual(path, "me/drive/root:/SHARED_MEMORY.md:/content")
+        self.assertIn("# Shared owner memory", content)
+        self.assertIn("John may ask me", content)
+        self.assertTrue(graph.call_args_list[1].kwargs["raw_body"])
+        self.assertIn("REMEMBERED", result)
+
+    def test_remember_never_overwrites_when_existing_memory_read_fails(self):
+        with mock.patch.object(self.m, "_caller_tier", return_value="owner"), \
+             mock.patch.object(self.m, "_graph", return_value="ERROR 403 from Graph: denied") as graph:
+            result = self.m.remember("permission")
+
+        graph.assert_called_once()
+        self.assertIn("MEMORY NOT CHANGED", result)
+        self.assertIn("risk data loss", result)
+
     def test_drive_404_does_not_claim_provisioning_or_suggest_native_fallback(self):
         with mock.patch.object(self.m, "_token", return_value="graph-token"), \
              mock.patch.object(self.m.urllib.request, "urlopen",
@@ -121,10 +339,10 @@ class GraphOneDriveTests(unittest.TestCase):
 
     def test_share_file_remains_graph_backed(self):
         with mock.patch.object(self.m, "_graph", return_value='{"value":[{"id":"permission-1"}]}') as graph:
-            result = self.m.share_file("item-1", "user@example.com", role="read", message="Test")
+            result = self.m.share_file("item-1", "john@example.com", role="read", message="Test")
 
         graph.assert_called_once_with("POST", "me/drive/items/item-1/invite", {
-            "recipients": [{"email": "user@example.com"}],
+            "recipients": [{"email": "john@example.com"}],
             "message": "Test",
             "requireSignIn": True,
             "sendInvitation": True,
