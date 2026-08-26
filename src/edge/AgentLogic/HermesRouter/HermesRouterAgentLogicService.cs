@@ -495,8 +495,12 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         }
 
         const string welcome =
-            "Hi! I'm your Hermes AI coworker, working through my own Microsoft 365 identity. " +
-            "You can message me here or email me whenever you need help.";
+            "Hi! I'm your Hermes AI coworker. I have my own Microsoft 365 identity, inbox, calendar, and OneDrive.\n\n" +
+            "I can research topics, create and edit documents, spreadsheets, presentations, and PDFs, " +
+            "send email, schedule meetings, and run recurring routines.\n\n" +
+            "Try asking: \"Research a topic, create a one-page brief, and share it with me,\" or " +
+            "\"Every weekday at 9:00, summarize the messages received in your inbox and email me the highlights.\"\n\n" +
+            "Share files with me, invite me to meetings, or email me just as you would another colleague.";
 
         await turnContext.SendActivityAsync(MessageFactory.Text(welcome));
         _logger.LogInformation(
