@@ -460,10 +460,50 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             Prompt($"{Clean(from)} mentioned you in a document comment.", text), CancellationToken.None);
     }
 
-    public Task HandleInstallationUpdateAsync(ITurnContext turnContext, ITurnState turnState,
-        AgentNotificationActivity installationEvent) =>
-        turnContext.SendActivityAsync(MessageFactory.Text(
-            "Hermes here. I'm running as my own identity — email me or message me any time."));
+    public async Task HandleInstallationUpdateAsync(ITurnContext turnContext, ITurnState turnState,
+        AgentNotificationActivity installationEvent)
+    {
+        // Agent 365 also emits installationUpdate for remove and upgrade transitions. A welcome
+        // message is appropriate only when the instance is first added for its owner.
+        var action = turnContext.Activity.Action ?? string.Empty;
+        if (!action.Equals(InstallationUpdateActionTypes.Add, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogInformation(
+                "Skipping owner welcome for installation action {Action} on agent instance {AgentId}",
+                string.IsNullOrWhiteSpace(action) ? "<missing>" : action,
+                _agent.AgentId);
+            return;
+        }
+
+        // Notification delivery is at-least-once. Prefer the stable activity id and fall back to
+        // the conversation/instance identity so an immediate redelivery cannot greet the owner
+        // twice. This shares the bounded six-hour process-local cache used for inbound email.
+        var deliveryId = turnContext.Activity.Id;
+        if (string.IsNullOrWhiteSpace(deliveryId))
+            deliveryId = turnContext.Activity.Conversation?.Id;
+        if (string.IsNullOrWhiteSpace(deliveryId))
+            deliveryId = $"{_agent.TenantId}:{_agent.AgentId}:{_agent.UserId}";
+
+        var dedupeKey = $"installation-welcome:{deliveryId}";
+        if (AlreadyReplied(dedupeKey))
+        {
+            _logger.LogInformation(
+                "Skipping duplicate owner welcome for agent instance {AgentId} (activity {ActivityId})",
+                _agent.AgentId,
+                turnContext.Activity.Id);
+            return;
+        }
+
+        const string welcome =
+            "Hi! I'm your Hermes AI coworker, working through my own Microsoft 365 identity. " +
+            "You can message me here or email me whenever you need help.";
+
+        await turnContext.SendActivityAsync(MessageFactory.Text(welcome));
+        _logger.LogInformation(
+            "Sent installation welcome to the owner of agent instance {AgentId} (activity {ActivityId})",
+            _agent.AgentId,
+            turnContext.Activity.Id);
+    }
 
     // ---- the turn ---------------------------------------------------------------------------
 

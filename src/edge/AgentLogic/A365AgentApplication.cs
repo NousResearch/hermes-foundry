@@ -188,16 +188,15 @@ public class A365AgentApplication : AgentApplication
             var agent = await GetAgentFromRecipient(turnContext.Activity);
             var agentService = await _factory.CreateAsync(agent, turnContext, UserAuthorization);
 
-            if (agent.IsMessagingEnabled)
-            {
-				// Create AgentNotificationActivity for installation updates
-				var agentNotificationActivity = new AgentNotificationActivity(turnContext.Activity);
-				await agentService.HandleInstallationUpdateAsync(turnContext, turnState, agentNotificationActivity);
-            }
-            else
-            {
-                await agentService.NewActivityReceived(turnContext, turnState, cancellationToken);
-			}
+            // Installation updates are lifecycle events, not user prompts. Always route them to the
+            // dedicated handler. The old IsMessagingEnabled check could never pass because the
+            // activity-derived AgentMetadata does not set that optional sample flag; as a result,
+            // newly provisioned hfull instances were sent through the ordinary Hermes turn path and
+            // the deterministic owner greeting below was unreachable. Each logic implementation
+            // decides what an installation event means: HermesRouter sends the welcome message,
+            // while the non-production ResponsesApi implementation deliberately does nothing.
+            var agentNotificationActivity = new AgentNotificationActivity(turnContext.Activity);
+            await agentService.HandleInstallationUpdateAsync(turnContext, turnState, agentNotificationActivity);
 		});
     }
 
