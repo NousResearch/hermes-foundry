@@ -31,30 +31,31 @@ the instance's Teams presence, mailbox, calendar, OneDrive, and directory profil
 Have the following ready:
 
 - a tenant administrator account with **Global Administrator** or **AI Administrator** access;
-- enrollment in [Microsoft 365 Frontier](https://learn.microsoft.com/en-us/microsoft-agent-365/frontier)
-  and acceptance of the Agent 365 terms;
+- Agent 365 Frontier enabled from
+  [Agent 365 Overview](https://admin.cloud.microsoft/#/agents/overview): select **Try now** and
+  accept the Agent 365 terms;
 - an available Microsoft Agent 365 Frontier agent seat;
 - either a pending **Hermes Agent on Foundry** request in the Microsoft 365 admin center or a
   tenant-specific ZIP supplied by Nous; and
 - a user or security group for the initial pilot.
 
-Microsoft's current preview prerequisites and licensing can change. Check
-[Build your first Autopilot](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/agent-365)
-before a new rollout. The current Frontier allocation is intended for evaluation; large production
-licensing and automated cross-tenant distribution remain dependent on Microsoft's commercial and
-platform availability.
+After accepting the terms, open
+[Billing > Licenses](https://admin.cloud.microsoft/#/licenses) and confirm that the tenant has an
+available **Microsoft 365 Frontier for AI Teammates** seat. The current Frontier allocation is
+intended for evaluation; large production licensing and automated cross-tenant distribution remain
+dependent on Microsoft's commercial and platform availability.
 
 ## Step 1: find the Hermes blueprint
 
-1. Open the [Microsoft 365 admin center](https://admin.cloud.microsoft/).
-2. Open **Agents** > **All agents**.
-3. Look for **Hermes Agent on Foundry** under **Requests** with the status **Pending activate**.
+1. Open [Agents > All agents > Requests](https://admin.cloud.microsoft/#/agents/all/requested).
+2. Look for **Hermes Agent on Foundry** with the status **Pending activate**.
 
 If it is present, select it and continue to Step 2.
 
 If Nous supplied a tenant-specific package instead:
 
-1. In **Agents** > **All agents**, select **Upload custom agent**.
+1. Open [Agents > All agents](https://admin.cloud.microsoft/#/agents/all) and select
+   **Upload custom agent**.
 2. Upload `Hermes-Agent-on-Foundry.zip`.
 3. Wait for validation to finish and select the uploaded agent.
 
@@ -92,7 +93,8 @@ There are two supported UI paths.
 
 Use this path when IT must control the name, alias, owner, or rollout order.
 
-1. In the Microsoft 365 admin center, open the available Hermes blueprint.
+1. Open [Agents > All agents](https://admin.cloud.microsoft/#/agents/all) and select the available
+   Hermes blueprint.
 2. Select **Create instance**.
 3. Choose the employee who will own or manage the instance.
 4. Enter the approved display name, alias/domain, and manager fields offered by Microsoft.
@@ -102,8 +104,8 @@ Use this path when IT must control the name, alias, owner, or rollout order.
 
 Use this path when employees in the hiring scope may provision their own Hermes colleague.
 
-1. Open [Microsoft Teams](https://teams.microsoft.com/) or
-   [Microsoft 365 Copilot](https://m365.cloud.microsoft/).
+1. Open [Microsoft Teams](https://teams.microsoft.com/v2/) or
+   [Microsoft 365 Copilot Chat](https://m365.cloud.microsoft/chat/).
 2. Open **Agents for your team** and select **Hermes Agent on Foundry**.
 3. Select **Create instance**.
 4. Enter the instance name and the other fields offered by Microsoft, then confirm creation.
@@ -150,14 +152,17 @@ the requested Microsoft 365 operation completed.
 
 | Control | Where the administrator configures it |
 | --- | --- |
-| Who may create an instance | Microsoft 365 admin center > Agents > Hermes > hiring scope |
-| Agent policy and allowed capabilities | Microsoft 365 admin center > Agents > policy templates |
-| Blueprint activation, disable, or removal | Microsoft 365 admin center > Agents > All agents |
-| Agent identities and Conditional Access | [Microsoft Entra admin center](https://entra.microsoft.com/) |
-| Licenses and available seats | Microsoft 365 admin center > Billing > Licenses |
-| Instance owner, manager, and lifecycle | Microsoft 365 admin center > Agents and Entra admin center |
+| Who may create an instance | [Agents > All agents](https://admin.cloud.microsoft/#/agents/all) > Hermes > hiring scope |
+| Agent policy and allowed capabilities | [Agents > All agents](https://admin.cloud.microsoft/#/agents/all) > Hermes > policy template |
+| Blueprint activation, disable, or removal | [Agents > All agents](https://admin.cloud.microsoft/#/agents/all) |
+| Agent identities | [Entra Agent identities](https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/AllAgents.MenuView/~/allAgentIds) |
+| Conditional Access policies | [Entra Conditional Access](https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies/menuId//fromNav/Identity) |
+| Licenses and available seats | [Billing > Licenses](https://admin.cloud.microsoft/#/licenses) |
+| Instance owner, manager, and lifecycle | [Agents > All agents](https://admin.cloud.microsoft/#/agents/all) and [Entra Agent identities](https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/AllAgents.MenuView/~/allAgentIds) |
 | Models deployed in a tenant-owned Foundry project | [Microsoft Foundry](https://ai.azure.com/) |
-| Azure model policy, quota, cost alerts, and logs | [Azure portal](https://portal.azure.com/) |
+| Azure model policy | [Azure Policy](https://portal.azure.com/#view/Microsoft_Azure_Policy/PolicyMenuBlade/~/Overview) |
+| Azure cost analysis and budget alerts | [Azure Cost Management](https://portal.azure.com/#view/Microsoft_Azure_CostManagement/Menu/~/overview) |
+| Runtime logs and metrics | [Azure Monitor](https://portal.azure.com/#view/Microsoft_Azure_Monitoring/AzureMonitoringBrowseBlade/~/overview) |
 
 Model, quota, budget, and runtime controls are available to the tenant administrator only when the
 Hermes runtime is deployed in that tenant's Azure subscription. Azure budgets provide alerts and

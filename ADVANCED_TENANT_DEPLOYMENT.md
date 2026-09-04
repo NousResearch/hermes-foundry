@@ -36,8 +36,9 @@ and provisioned by Microsoft, its own mailbox, OneDrive, Teams presence, and dir
 
 For the own-identity Autopilot path used here, Microsoft currently requires all of the following:
 
-- enrollment in the [Microsoft 365 Frontier program](https://learn.microsoft.com/en-us/microsoft-agent-365/frontier);
-- acceptance of the Microsoft Agent 365 terms;
+- Agent 365 Frontier enabled from
+  [Agent 365 Overview](https://admin.cloud.microsoft/#/agents/overview) by selecting **Try now** and
+  accepting the Agent 365 terms;
 - at least one Microsoft 365 Copilot license or Microsoft Agent 365 license, including Microsoft
   365 E7; and
 - an available Microsoft Agent 365 Frontier license.
@@ -295,8 +296,8 @@ must not point directly at the container's internal port.
 
 ## Step 10: upload, review, and activate the blueprint
 
-1. Open [Microsoft 365 admin center](https://admin.cloud.microsoft/).
-2. Select **Agents → All agents → Upload custom agent**.
+1. Open [Agents > All agents](https://admin.cloud.microsoft/#/agents/all).
+2. Select **Upload custom agent**.
 3. Upload `Hermes-Agent-on-Foundry.zip`.
 4. Open the new `Hermes Agent on Foundry` request.
 5. Under **Publish to users**, select the host products and choose the hiring scope:
