@@ -63,14 +63,14 @@ class GraphOneDriveTests(unittest.TestCase):
                 "daily-mail",
                 "Summarize my own inbox and email the summary to the owner.",
                 "0 7 * * *",
-                "Europe/Nicosia",
+                "Europe/London",
             )
 
         control.assert_called_once_with("create", {
             "name": "daily-mail",
             "task": "Summarize my own inbox and email the summary to the owner.",
             "cronExpression": "0 7 * * *",
-            "timeZone": "Europe/Nicosia",
+            "timeZone": "Europe/London",
         })
         self.assertEqual(result, "created")
 

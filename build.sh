@@ -1,21 +1,41 @@
 #!/usr/bin/env bash
-# Build Hermes Foundry: edge, gateway, Hermes, and the Microsoft 365 sidecar in one image.
-# The repository is self-contained; builds must use only source under ./src.
+# Build the Plan F image: Hermes + edge + gateway + M365 sidecar in one container.
+#
+# ⛔ PLAN F HAS ITS OWN SOURCE, IN ./src — IT MUST NOT REACH OUTSIDE THIS DIRECTORY.
+#
+# This build used to publish the edge from ../agent-identity/foundry-autopilot/src/hello_world_a365_agent
+# and copy the gateway and sidecar from ../ as well. That made Plan F and the THIN Foundry stack
+# (`.fndr`, declared stable and frozen — see STABLE_FNDR.md) share one set of source files.
+#
+# Why that was actively dangerous, from 2026-08-17: chasing an hfull-only symptom, a behavioural change
+# was made to the shared edge — altering WHICH CALLERS THE AGENT WILL ANSWER — and the reasoning "I will
+# only deploy it to hfull" was treated as sufficient. It is not: the frozen stack's next rebuild would
+# have silently inherited it. The freeze cannot depend on remembering which files are shared.
+#
+# So ./src is a full, committed, independent copy. Changes here affect Plan F and nothing else, and the
+# guard below fails the build if a `../` path ever creeps back in.
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Optional, gitignored per-installation settings. Every tracked checkout remains tenant-neutral.
 [ ! -f .deployment.local ] || source ./.deployment.local
-: "${REG:?Set REG to the Azure Container Registry name (without .azurecr.io), or add it to .deployment.local}"
-# A positional tag takes precedence over TAG. Agent versions are pinned to the resulting digest.
+: "${REG:?Set REG to the Azure Container Registry name (or add it to .deployment.local)}"
+# Positional first, env second. `build.sh v18` silently produced a `v1` image when TAG was env-only,
+# and a mis-tagged image is genuinely dangerous here: the agent version pins a tag, so the wrong one
+# deploys old code under a new version number and every conclusion drawn from it is wrong.
 TAG="${1:-${TAG:-v1}}"
 
-SRC=./src
+SRC=./src                      # the FORK — never a parent path (the guard below enforces it)
 [ -d "$SRC/edge" ] && [ -f "$SRC/gateway/app.py" ] && [ -f "$SRC/sidecar/agent365_mcp.py" ] || {
   echo "ERROR: $SRC is incomplete — expected src/edge, src/gateway/app.py, src/sidecar/agent365_mcp.py"; exit 1; }
 
-# Fail if executable lines reach outside this repository.
+# ISOLATION GUARD. If this script ever references a parent path again, fail loudly rather than quietly
+# re-coupling Plan F to the frozen thin-Foundry source.
+# Strip comments BEFORE matching. An earlier version piped `grep -n` into `grep -v '^\s*#'`, which
+# never excluded anything — grep -n prefixes the line number, so the line starts with a digit, not a
+# hash. The guard then failed the build by flagging its own documentation.
 if grep -vE '^[[:space:]]*#' "$0" | grep -qE '(^|[^.])\.\./'; then
-  echo "ERROR: build.sh references a path outside the repository; builds must use only ./src:"
+  echo "ERROR: build.sh references a path outside full-foundry/ — Plan F must build only from ./src:"
   grep -nE '(^|[^.])\.\./' "$0" | grep -vE '^[0-9]+:[[:space:]]*#'
   exit 1
 fi
@@ -23,12 +43,12 @@ fi
 export DOTNET_ROOT="${DOTNET_ROOT:-$HOME/.dotnet}"
 export PATH="$DOTNET_ROOT:$PATH"
 
-echo "==> publishing the edge ($SRC/edge)"
+echo "==> publishing the edge from the fork ($SRC/edge)"
 rm -rf edge && mkdir -p edge
 dotnet publish "$SRC/edge" -c Release -o ./edge
 [ -f edge/HelloWorldA365Agent.dll ] || { echo "publish produced no HelloWorldA365Agent.dll"; exit 1; }
 
-echo "==> staging gateway + sidecar"
+echo "==> staging gateway + sidecar from the fork"
 mkdir -p gateway sidecar
 cp "$SRC/gateway/app.py" gateway/
 cp "$SRC/sidecar/agent365_mcp.py" sidecar/

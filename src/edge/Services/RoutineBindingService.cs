@@ -21,6 +21,7 @@ using HelloWorldA365.Models;
 public sealed class RoutineBindingService(
     IConfiguration configuration,
     IHttpClientFactory httpClientFactory,
+    IHttpContextAccessor httpContextAccessor,
     ILogger<RoutineBindingService> logger)
 {
     public const string InvocationPrefix = "hermes-routine:v1:";
@@ -65,6 +66,10 @@ public sealed class RoutineBindingService(
             AgentUpn = agent.EmailId,
             OwnerObjectId = ownerObjectId ?? "",
             OwnerUpn = ownerUpn ?? "",
+            // Container protocol 2.0 requires the opaque per-request call ID to be forwarded on
+            // outbound calls to Foundry services. Keep it inside the signed, short-lived owner
+            // capability: the model and sidecar never see or choose the value.
+            FoundryCallId = ReadFoundryCallId(httpContextAccessor.HttpContext?.Request),
             IssuedAt = now.ToUnixTimeSeconds(),
             ExpiresAt = now.AddMinutes(15).ToUnixTimeSeconds(),
             Nonce = Guid.NewGuid().ToString("N")
@@ -170,6 +175,7 @@ public sealed class RoutineBindingService(
             HttpMethod.Put,
             $"routines/{Uri.EscapeDataString(internalName)}",
             JsonSerializer.Serialize(body, JsonOptions),
+            capability.FoundryCallId,
             cancellationToken);
         var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
@@ -198,7 +204,8 @@ public sealed class RoutineBindingService(
         if (!EnsureFoundryConfigured(out var configurationError))
             return RoutineControlResult.Failure(configurationError);
 
-        using var response = await SendFoundryAsync(HttpMethod.Get, "routines", null, cancellationToken);
+        using var response = await SendFoundryAsync(
+            HttpMethod.Get, "routines", null, capability.FoundryCallId, cancellationToken);
         var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
             return RoutineControlResult.Failure(
@@ -262,7 +269,8 @@ public sealed class RoutineBindingService(
 
         var internalName = InternalName(capability.AgentIdentityId, displayName);
         using var get = await SendFoundryAsync(
-            HttpMethod.Get, $"routines/{Uri.EscapeDataString(internalName)}", null, cancellationToken);
+            HttpMethod.Get, $"routines/{Uri.EscapeDataString(internalName)}", null,
+            capability.FoundryCallId, cancellationToken);
         var body = await get.Content.ReadAsStringAsync(cancellationToken);
         if (get.StatusCode == System.Net.HttpStatusCode.NotFound)
             return RoutineControlResult.Failure($"No routine named '{displayName.Trim()}' belongs to this Hermes instance.");
@@ -285,7 +293,8 @@ public sealed class RoutineBindingService(
         }
 
         using var delete = await SendFoundryAsync(
-            HttpMethod.Delete, $"routines/{Uri.EscapeDataString(internalName)}", null, cancellationToken);
+            HttpMethod.Delete, $"routines/{Uri.EscapeDataString(internalName)}", null,
+            capability.FoundryCallId, cancellationToken);
         var deleteBody = await delete.Content.ReadAsStringAsync(cancellationToken);
         if (!delete.IsSuccessStatusCode)
             return RoutineControlResult.Failure(
@@ -388,10 +397,12 @@ public sealed class RoutineBindingService(
         HttpMethod method,
         string relativePath,
         string? json,
+        string? foundryCallId,
         CancellationToken cancellationToken)
     {
         var token = await _credential.GetTokenAsync(
             new TokenRequestContext(["https://ai.azure.com/.default"]), cancellationToken);
+        LogFoundryCaller(token.Token, foundryCallId);
         var client = httpClientFactory.CreateClient();
         client.Timeout = TimeSpan.FromSeconds(60);
         var querySeparator = relativePath.Contains('?') ? '&' : '?';
@@ -400,9 +411,68 @@ public sealed class RoutineBindingService(
             $"{_projectEndpoint}/{relativePath}{querySeparator}api-version={Uri.EscapeDataString(ApiVersion)}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
         request.Headers.TryAddWithoutValidation("Foundry-Features", PreviewHeader);
+        if (!string.IsNullOrWhiteSpace(foundryCallId))
+            request.Headers.TryAddWithoutValidation("x-agent-foundry-call-id", foundryCallId);
         if (json is not null)
             request.Content = new StringContent(json, Encoding.UTF8, "application/json");
         return await client.SendAsync(request, cancellationToken);
+    }
+
+    private void LogFoundryCaller(string accessToken, string? foundryCallId)
+    {
+        // Never log the bearer token. The non-secret identity claims are enough to prove which
+        // principal DefaultAzureCredential selected inside this particular hosted session. That
+        // distinction matters here because an Agent 365 instance identity, the shared Hosted Agent
+        // runtime identity, and the blueprint principal are three different directory objects.
+        try
+        {
+            var parts = accessToken.Split('.');
+            if (parts.Length < 2 || !TryB64Url(parts[1], out var payload))
+            {
+                logger.LogWarning(
+                    "Foundry routine caller token is not a readable JWT; call-id present={FoundryCallIdPresent}",
+                    !string.IsNullOrWhiteSpace(foundryCallId));
+                return;
+            }
+
+            using var document = JsonDocument.Parse(payload);
+            var claims = document.RootElement;
+            // Keep this at Warning while routine-management authorization is under investigation.
+            // The hosted production logger currently drops Information events for this category,
+            // which hid the only evidence that distinguishes the ambient hosted identity from an
+            // Agent 365 instance or blueprint principal. These are non-secret directory claims;
+            // the bearer token is never logged.
+            logger.LogWarning(
+                "Foundry routine caller: oid={ObjectId}, appid={ApplicationId}, azp={AuthorizedParty}, "
+                + "idtyp={IdentityType}, call-id present={FoundryCallIdPresent}",
+                Claim(claims, "oid"),
+                Claim(claims, "appid"),
+                Claim(claims, "azp"),
+                Claim(claims, "idtyp"),
+                !string.IsNullOrWhiteSpace(foundryCallId));
+        }
+        catch (Exception ex) when (ex is JsonException or FormatException)
+        {
+            logger.LogWarning(
+                "Could not decode Foundry routine caller claims ({ErrorType}); call-id present={FoundryCallIdPresent}",
+                ex.GetType().Name,
+                !string.IsNullOrWhiteSpace(foundryCallId));
+        }
+    }
+
+    private static string Claim(JsonElement claims, string name) =>
+        claims.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? ""
+            : "";
+
+    private static string ReadFoundryCallId(HttpRequest? request)
+    {
+        var value = request?.Headers["x-agent-foundry-call-id"].ToString().Trim() ?? "";
+        // This is an opaque platform handle, not user/model input. Still reject malformed or
+        // unreasonable header content before copying it to another request.
+        return value.Length is > 0 and <= 4096 && !value.Contains('\r') && !value.Contains('\n')
+            ? value
+            : "";
     }
 
     private string Sign<T>(T value)
@@ -534,6 +604,7 @@ public sealed class RoutineCreationCapability
     [JsonPropertyName("agent_upn")] public string AgentUpn { get; set; } = "";
     [JsonPropertyName("owner_oid")] public string OwnerObjectId { get; set; } = "";
     [JsonPropertyName("owner_upn")] public string OwnerUpn { get; set; } = "";
+    [JsonPropertyName("foundry_call_id")] public string FoundryCallId { get; set; } = "";
     [JsonPropertyName("iat")] public long IssuedAt { get; set; }
     [JsonPropertyName("exp")] public long ExpiresAt { get; set; }
     [JsonPropertyName("nonce")] public string Nonce { get; set; } = "";

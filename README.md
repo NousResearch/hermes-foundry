@@ -92,7 +92,10 @@ A normal message follows this path:
 src/edge/       .NET Foundry and Microsoft 365 agent edge
 src/gateway/    edge-to-Hermes gateway
 src/sidecar/    Microsoft 365 and utility MCP tools
+src/hermes-patches/ build-time compatibility overlays for the pinned Hermes image
 tests/          sidecar unit tests
+infra/          tenant-admin Azure automation templates
+scripts/        installation and removal commands for that automation
 Dockerfile      combined hosted-agent image
 start.sh        process startup and supervision
 build.sh        local publish and Azure Container Registry build
@@ -159,18 +162,23 @@ each value:
 | Created or chosen by | Settings | Where to obtain them |
 | --- | --- | --- |
 | Foundry bootstrap | `AZURE_FOUNDRY_BASE_URL`, `AZURE_AI_PROJECT_ENDPOINT` | Outputs of the Foundry account/project deployment. See [deployment §8](DEPLOYMENT.md#8-bootstrap-the-first-foundry-and-agent-365-stack). |
-| Foundry model deployment | `MODEL_DEPLOYMENT_NAME`, `FALLBACK_MODEL_DEPLOYMENT_NAME` | The **deployment names**, not model catalog names, shown under the Foundry project's model deployments. See [deployment §11](DEPLOYMENT.md#11-create-a-hermes-hosted-agent-version). |
+| Foundry model deployment | `MODEL_DEPLOYMENT_NAME`, `FALLBACK_MODEL_DEPLOYMENT_NAME`, `MODEL_PRIORITY` | **Deployment names**, not catalog model IDs. Automatic selection uses the first currently available name in `MODEL_PRIORITY`. See [Model discovery and Teams selection](#model-discovery-and-teams-selection). |
+| Release script | `MODEL_DEPLOYMENTS_SNAPSHOT` | Compatible project deployments captured automatically by `new-version.sh`; used only when live enumeration is unavailable. |
+| Tenant model policy | `MODEL_ALLOWED_DEPLOYMENTS` | Optional blueprint-version-wide subset of compatible project deployments. Leave unset to expose all compatible chat deployments. |
 | Agent 365/Entra bootstrap | `AgentBlueprintId`, `AgentTenantId` | Outputs produced when the blueprint is registered in the tenant. |
 | Agent User creation | `AgentInstanceId`, `AgentUserObjectId`, `AgentUpn` | The ID, Entra object ID, and address of the Agent User created through Agent 365. See [deployment §12](DEPLOYMENT.md#12-approve-and-instantiate-the-agent-user). |
 | Human owner/admin | `AgentOwnerUpn`, `AgentOwnerOid`, `AgentTenantDomain` | The owner's Entra address/object ID and the organization's tenant domain. The runtime can later resolve the configured owner through the Agent User's manager, but the initial values are still required. |
 | Bootstrap-generated | `IdentitySignKey` | A random signing value generated and stored by the installer. Do not invent a memorable value or commit it. |
+| Routine credential bootstrap | `RoutineCredentialVaultUri`, `RoutineCredentialCertificateName` | Optional Key Vault certificate used by the blueprint as its confidential-client credential for non-turn Agent OBO. The public key is registered on the blueprint; the private key stays in tenant-controlled Key Vault. |
 | Fixed runtime choice | `AgentLogic=HermesRouter`, `McpDiscoverySource=Manifest` | These select the normal Hermes path and the committed Microsoft 365 tool manifest. They are not tenant-specific. |
 | Optional diagnostics | `A365AgentTracingId` | A deployment-specific tracing value, only when Agent 365 tracing is configured. |
 
-Optional scheduled routines add `RoutineCredentialVaultUri` and
-`RoutineCredentialCertificateName`. Beginners should leave routines disabled: the certificate flow
-is still manually administered. See [deployment §14](DEPLOYMENT.md#14-routines-and-non-turn-identity)
-and [ROADMAP.md](ROADMAP.md).
+Scheduled routines use the blueprint's Key Vault credential for Agent OBO and a stable
+`RoutineBindingSignKey` stored through deployment automation. They also require each child Agent
+Identity to have **Foundry User** at project scope so it can manage its own routines. Install the
+tenant-admin reconciler once as described in
+[ROUTINE_RBAC_AUTOMATION.md](ROUTINE_RBAC_AUTOMATION.md); do not grant roles to test identities by
+hand.
 
 You do not supply `RouterUrl`, internal ports, or internal service keys. The image fixes all service
 addresses to loopback, and `start.sh` generates matching ephemeral keys for the edge, gateway,
@@ -189,6 +197,8 @@ deployment output or Azure/Foundry portal; they are resource names, not secrets:
 | `REG` | Existing Azure Container Registry name, without `.azurecr.io` |
 | `PRIMARY_MODEL` | Existing primary model **deployment** name |
 | `FALLBACK_MODEL` | Existing fallback model **deployment** name |
+| `MODEL_PRIORITY` | Optional ordered comma-separated deployment names |
+| `MODEL_ALLOWED_DEPLOYMENTS` | Optional approved subset of project chat deployments |
 
 If the original deployment worksheet is unavailable:
 
@@ -217,9 +227,10 @@ The script:
 1. Resolves the image tag to an immutable registry digest.
 2. Reads the currently serving hosted-agent version.
 3. Preserves its environment, metadata, CPU, memory, and protocol settings.
-4. Creates a new version with the selected image and models.
-5. Compares the old and new definitions without printing environment values.
-6. Prints an explicit routing command but does not execute it.
+4. Enumerates the project's chat-capable deployments and records a safe fallback snapshot.
+5. Creates a new version with the selected image and model policy.
+6. Compares the old and new definitions without printing environment values.
+7. Prints an explicit routing command but does not execute it.
 
 Review the comparison and test the new version before routing production traffic.
 
@@ -232,6 +243,10 @@ Hermes state defaults to `/files/hermes`, within Foundry's persisted filesystem.
 configuration to the locations expected by Hermes and starts the edge before slow model services so
 the hosted session can satisfy its readiness window.
 
+Owner-approved long-term memory is stored in the Agent User's own OneDrive through `remember` and
+`recall`. Caller-scoped `/model` preferences are stored on the persisted Hermes state volume using a
+one-way hash of the conversation key.
+
 ## Microsoft 365 access
 
 The sidecar exposes Microsoft 365 tools using the agent's own identity. Graph-backed tools cover
@@ -242,6 +257,61 @@ mode; it is not part of the normal `HermesRouter` production path.
 Permissions and identity provisioning belong to the target tenant. This repository intentionally
 contains no tenant IDs, user addresses, blueprint IDs, client secrets, certificates, or deployment
 credentials.
+
+The current tool surface covers mail, calendar, OneDrive create/read/search/share, Word and Excel
+creation, in-place Word editing, PDF generation, web search/fetch, durable owner memory, and Foundry
+Routine creation/list/removal. Teams uploads are downloaded using the recipient Agent User's access,
+and long tool runs update one progress activity before posting the final answer.
+
+## Model discovery and Teams selection
+
+The Azure administrator remains the source of truth for model access. Hermes calls the documented
+project-scoped `GET {project-endpoint}/deployments?api-version=v1`, follows pagination, and retains
+only chat/Responses-capable `ModelDeployment` records. It cannot deploy models or bypass project
+RBAC, Azure Policy, deployment state, or quota.
+
+Automatic mode follows `MODEL_PRIORITY`; absent deployments are skipped. The release script stores
+the same inventory in `MODEL_DEPLOYMENTS_SNAPSHOT`, while the runtime refreshes live discovery every
+five minutes and uses the snapshot only if enumeration is unavailable. A snapshot grants no model
+access: the live Foundry inference endpoint remains authoritative.
+
+Teams users can type:
+
+- `/model` or `/model list` to see the current and available deployment names;
+- `/model <deployment-name>` to choose an allowed model for that caller-scoped conversation;
+- `/model auto` to return to the administrator's priority order; and
+- `/model refresh` to refresh the project inventory.
+
+`MODEL_ALLOWED_DEPLOYMENTS` is a deployment-wide allow-list, not a per-employee entitlement. For `/`
+autocomplete, the separately published Teams manifest must declare `supportsTargetedMessages` and a
+`commandLists` entry with the `slash` trigger. Typed commands work without that autocomplete entry.
+
+After a release, verify `/model`, select one listed deployment, send an ordinary prompt, then run
+`/model auto`. If `/model` is treated as ordinary chat, the conversation is still pinned to an older
+hosted session; let that session idle or stop that specific session before testing again.
+
+## Scheduled routines
+
+Hermes/OS cron is disabled. Recurring requests use Foundry Routines and require an explicit IANA time
+zone. If the owner has not supplied one, Hermes asks once and stores it through `remember` for later
+requests by the same Agent User.
+
+During a verified owner turn, the edge signs the exact task, schedule, owner, Agent Identity, and
+Agent User binding before creating the Routine. A fired Routine is accepted only after that binding
+is verified. The edge then uses Entra's agent-specific OBO flow to obtain a fresh short-lived Graph
+token for the paired Agent User; no human token, Graph access token, or refresh token is stored in
+the Routine.
+
+Agent OBO still requires the blueprint to authenticate as a confidential client. The tested setup
+registers one X.509 public certificate on the blueprint and keeps its private key in Azure Key Vault,
+readable by the hosted runtime. An administrator configures it once per deployment and rotates it
+according to tenant policy; it is not created or exposed for each Routine.
+
+Routine management is a separate Azure authorization boundary. New Agent Identities do not inherit
+project RBAC from the blueprint, so a tenant administrator installs the included Logic App once. It
+discovers future child identities and grants only **Foundry User** at the selected project scope.
+See [ROUTINE_RBAC_AUTOMATION.md](ROUTINE_RBAC_AUTOMATION.md) for installation, verification,
+security boundaries, cost, and removal.
 
 ## Tests
 
@@ -273,19 +343,20 @@ Known non-production areas include:
   project, hosted agent, registry, agent identity, permissions, toolboxes, and model deployments.
   `new-version.sh` updates an existing hosted agent by cloning its serving definition; it does not
   bootstrap a fresh tenant.
-- **Models and releases:** release defaults currently name `gpt-5.6-terra` and `gpt-5.6-luna`.
-  They can be overridden, but automatic deployment discovery, compatibility validation, quota
-  handling, and a tenant-aware model-routing policy are not implemented.
-- **Routines/cron:** the Responses-protocol adapter can receive scheduled invocations, but non-turn
-  agent identity currently requires manually configured blueprint credentials in Azure Key Vault.
-  Certificate enrollment, rotation, expiry monitoring, revocation, and routine lifecycle management
-  are not automated. Routine session isolation and end-to-end coverage are limited. We are waiting
-  for Microsoft guidance on a simpler or alternative supported non-turn identity flow.
-- **Microsoft 365 provisioning:** Graph operations depend on the tenant having provisioned the
-  Agent User's workloads and granted the necessary permissions. The repository does
+- **Models and releases:** compatible project deployments are discovered and can be selected through
+  Teams, with administrator priority and allow-list controls. The allow-list is currently
+  blueprint-version-wide rather than per employee; model compatibility beyond the project OpenAI
+  Responses surface, quota-aware routing, and a tenant policy UI remain incomplete.
+- **Routines/cron:** routine CRUD, instance-bound signed actions, Entra Agent User OBO execution, and
+  automatic project-role reconciliation are implemented. Foundry Routines remain a preview service;
+  immediate binding revocation, execution deduplication, signing-key rotation, and mature
+  business-completion telemetry remain incomplete.
+- **Microsoft 365 provisioning:** Graph and native MCP operations depend on the tenant having
+  provisioned the Agent User's workloads and granted the necessary permissions. The repository does
   not automate tenant-wide consent, mailbox/OneDrive readiness, or every service-specific policy.
-- **Files:** the current OneDrive implementation uses simple upload requests. Resumable upload
-  sessions, robust large-file transfer, retry/resume, and broad file-type testing are not complete.
+- **Files:** OneDrive, Teams attachment download, sharing, document creation, and in-place Word
+  editing work for tested formats. Resumable upload sessions, robust large-file transfer,
+  retry/resume, and broad file-type testing are not complete.
 - **Tool dependencies:** browser automation and code interpretation are custom wrappers around
   Foundry toolboxes rather than unrestricted processes inside the container. Missing toolbox
   resources, permissions, or regional availability reduce functionality. Local arbitrary command

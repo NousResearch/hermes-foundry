@@ -34,7 +34,7 @@ One Azure subscription in the same tenant
       ├─ Azure Container Registry
       ├─ Azure Bot used by the M365/Teams channel
       ├─ Application Insights and Log Analytics
-      └─ Optional Key Vault for non-turn routine credentials
+      └─ Optional Key Vault for the blueprint's non-turn OBO credential
 ```
 
 Foundry hosts the combined edge, gateway, Hermes runtime, and Microsoft 365 sidecar container. The
@@ -166,7 +166,7 @@ primary `onmicrosoft.com` domain in a secure deployment worksheet, not in this r
    done
    ```
 
-   Register `Microsoft.KeyVault` only if the optional routine certificate flow will be configured.
+   Register `Microsoft.KeyVault` if the optional non-turn Agent OBO credential will be configured.
    The current single-container Foundry architecture does not require Azure Container Apps.
 
 4. Choose a Foundry region that supports hosted agents and the desired model deployments. Confirm
@@ -256,12 +256,9 @@ The installer must perform these operations in this order:
 4. Create the hosted agent and its first version. The version must expose both `activity` and
    `responses`, use `BotServiceTenant`, and include the complete environment listed in the
    repository README.
-5. Configure `AZURE_FOUNDRY_BASE_URL` to the hosted agent's project-scoped OpenAI endpoint. Hosted
-   agent instances receive inference access through that project path; using the account-level
-   Cognitive Services endpoint instead creates an avoidable per-instance RBAC requirement.
-6. Create and connect the Agent 365 blueprint/Azure Bot, grant the required Microsoft 365
+5. Create and connect the Agent 365 blueprint/Azure Bot, grant the required Microsoft 365
    permissions, and mark the matching Graph scopes inheritable.
-7. Emit only a redacted deployment summary. Store tenant IDs, resource IDs, blueprint IDs, owner
+6. Emit only a redacted deployment summary. Store tenant IDs, resource IDs, blueprint IDs, owner
    addresses, and generated signing values in the deployment environment or secret store, never in
    source control.
 
@@ -400,19 +397,48 @@ concluding that a deployment change had no effect.
 
 ## 14. Routines and non-turn identity
 
-Interactive turns provide identity context used by the Microsoft agent authorization SDK. A
-scheduled routine has no human turn from which to exchange that identity.
+Interactive turns and scheduled invocations enter the same Hermes image through different
+protocols. An Activity turn contains trusted Agent 365 instance metadata. A Foundry Routine has no
+human turn, so the edge verifies the signed instance/task binding stored when the owner created the
+Routine and uses Microsoft Identity Web's agent-specific OBO flow to select the child Agent Identity
+and its one-to-one Agent User. Entra issues a fresh short-lived Graph token for that execution. The
+Routine does not store a human credential, Graph token, or refresh token.
 
-The current POC can use a blueprint certificate stored in Azure Key Vault for non-turn calls. In
-the tested setup, an administrator created the certificate once, registered its public key on the
-blueprint, kept the private key in Key Vault, and granted the hosted runtime identity permission to
-use it. The administrator does not run a script for every routine; the certificate remains valid
-until rotation or revocation is required.
+The blueprint must authenticate as a confidential client for this flow. In the tested setup, an
+administrator registers one X.509 public certificate on the blueprint, stores its private key in
+Azure Key Vault, and grants the hosted runtime permission to read it. Configure
+`RoutineCredentialVaultUri` and `RoutineCredentialCertificateName` on the hosted-agent version. The
+administrator performs this once per deployment and rotates/revokes the credential according to
+tenant policy, not once per Routine.
 
-This flow is not automated in the public repository. Certificate creation, public-key registration,
-Key Vault policy, rotation, expiry alerting, revocation, and routine lifecycle management remain
-WIP. Do not configure routines in a beginner deployment. We are also waiting for Microsoft guidance
-on a simpler supported non-turn agent-identity flow.
+Routine execution and Routine management are separate authorization boundaries. Calling the
+Foundry Routine data plane requires **Foundry User** or higher at project scope. Child Agent
+Identities do not inherit Azure project RBAC from their blueprint. Install the included reconciler
+once per Hermes blueprint/project after the base stack exists:
+
+```bash
+./scripts/install-agent-rbac-automation.sh \
+  --resource-group <resource-group> \
+  --account <foundry-account> \
+  --project <foundry-project> \
+  --blueprint-client-id <blueprint-client-id>
+```
+
+The installer deploys a Consumption Logic App with a system-assigned managed identity. Every five
+minutes it discovers new Agent Identities belonging to the configured blueprint and grants only
+**Foundry User** at that project. It does not provision Agent Users, Microsoft 365 workloads,
+mailboxes, OneDrive, or Teams identities. Do not assign roles manually to make an instance test pass;
+that hides a broken tenant-wide provisioning path.
+
+The deployment must also provide one stable `RoutineBindingSignKey` through tenant-controlled secret
+automation. It signs identity/task bindings; it is not a Graph credential. For prerequisites,
+least-privilege boundaries, verification, cost, and removal, follow
+[ROUTINE_RBAC_AUTOMATION.md](ROUTINE_RBAC_AUTOMATION.md).
+
+Hermes/OS cron is disabled. Routine requests require an explicit IANA time zone; Hermes asks the
+owner when none has been stored and remembers the answer in that Agent User's durable OneDrive
+memory. Foundry Routines remain a preview service, so validate downstream tool completion rather
+than treating dispatch status alone as proof that the requested business action finished.
 
 ## 15. What the working deployment taught us
 
@@ -426,8 +452,9 @@ These implementation fixes are already in the repository and should not be remov
 - The .NET runtime comes from the official runtime image rather than a runtime install script.
 - Loopback service keys are generated together so the edge, gateway, sidecar, and Hermes cannot
   silently disagree.
-- The hosted identity needs explicit model-access RBAC even when the human deployer can use the
-  model.
+- Hosted agents use the project-scoped OpenAI endpoint for implicit project inference. Do not switch
+  to the account-level Cognitive Services endpoint unless every runtime identity is deliberately
+  granted the additional model-access RBAC it requires.
 - Both `activity` and `responses` protocols are required: interactive M365 delivery uses the former
   and Foundry routines use the latter.
 - `AgentLogic=ResponsesApi` is diagnostic compatibility mode, not the Hermes production path.
@@ -444,7 +471,8 @@ Before this guide can be called a complete external deployment process, the repo
 - safe approval/instance handoff instructions that match the current Agent 365 UI;
 - a redacted deployment summary and validation command;
 - an uninstall/rollback procedure; and
-- automated routine-certificate enrollment and rotation, if that flow remains necessary.
+- production hardening for Routine binding revocation, signing-key rotation, deduplication, and
+  downstream completion telemetry.
 
 Until those are committed and tested in a second clean tenant, deployment is maintainer-assisted.
 
@@ -454,14 +482,15 @@ Until those are committed and tested in a second clean tenant, deployment is mai
 | --- | --- |
 | `403` creating/updating hosted agent | `Foundry Project Manager` data-plane role and propagation time; Azure Owner alone is not enough |
 | ACR image cannot be pulled | Project managed identity has Repository Reader/`AcrPull` on that ACR |
-| Model call returns 401 | Hosted compute/agent identity has `Cognitive Services OpenAI User` or current recommended model-access role |
+| Model call returns 401 | Confirm `AZURE_FOUNDRY_BASE_URL` is the project-scoped `/openai/v1` endpoint; account-level endpoints require separate model RBAC |
 | Model rate limit on first/second turn | Deployment TPM capacity is below a Hermes prompt/tool loop or subscription regional quota is exhausted |
 | Graph scope appears granted but tool gets 403 | The same scope was not declared inheritable on the blueprint |
 | OneDrive personal site/drive not found | Agent User workload provisioning is incomplete; wait before changing scopes |
 | New code appears unchanged | The conversation is pinned to an older hosted-agent version |
 | Container never becomes ready | Edge did not bind early, port collision, missing runtime, or startup process assumed PID 1 |
 | Chat works but M365 tools fail | Agent identity environment, token exchange, Graph inheritance, or internal gateway/sidecar key mismatch |
-| Routine can chat but cannot use M365 | Non-turn credential flow is absent or Key Vault/certificate configuration is incomplete |
+| Routine creation returns 403 | Confirm the blueprint/project RBAC reconciler is installed and the Agent Identity has **Foundry User** at project scope |
+| Routine dispatches but M365 action fails | Verify the signed instance binding, blueprint credential, Agent User relationship, and inheritable Graph permissions |
 
 Microsoft references:
 

@@ -227,6 +227,14 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         return Task.CompletedTask;
     }
 
+    public Task HandleMembersAddedAsync(ITurnContext turnContext, ITurnState turnState, CancellationToken cancellationToken)
+    {
+        // ResponsesApi is retained only as a non-production diagnostic mode. Keep its lifecycle
+        // behavior unchanged; the production HermesRouter owns the deterministic welcome.
+        _logger.LogInformation("Processing members-added update (Responses API)");
+        return Task.CompletedTask;
+    }
+
     /// <summary>
     /// Invokes the OpenAI Responses API with MCP tools from the manifest.
     /// </summary>

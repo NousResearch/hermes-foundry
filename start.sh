@@ -23,6 +23,31 @@ log() { echo "[plan-f] $*"; }
 : "${FALLBACK_MODEL_DEPLOYMENT_NAME:?FALLBACK_MODEL_DEPLOYMENT_NAME is required}"
 : "${AZURE_FOUNDRY_BASE_URL:?AZURE_FOUNDRY_BASE_URL is required}"
 
+# The edge chooses the first currently deployed model in this administrator-defined order. Hermes'
+# own fallback chain uses the same order after a selected model exhausts its normal retries. Keep
+# the legacy single fallback variable as a compatibility input; MODEL_PRIORITY is the extensible
+# policy and may contain any number of safe Azure deployment names.
+MODEL_PRIORITY="${MODEL_PRIORITY:-${MODEL_DEPLOYMENT_NAME},${FALLBACK_MODEL_DEPLOYMENT_NAME}}"
+export MODEL_PRIORITY
+FALLBACK_PROVIDER_YAML=""
+declare -A _seen_fallback_models=()
+IFS=',' read -r -a _priority_models <<< "$MODEL_PRIORITY"
+for _raw_model in "${_priority_models[@]}" "$FALLBACK_MODEL_DEPLOYMENT_NAME"; do
+  _model="${_raw_model//[[:space:]]/}"
+  [ -n "$_model" ] || continue
+  if [[ ! "$_model" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+    log "WARNING: ignoring unsafe model deployment name in MODEL_PRIORITY"
+    continue
+  fi
+  [ -z "${_seen_fallback_models[$_model]:-}" ] || continue
+  _seen_fallback_models[$_model]=1
+  FALLBACK_PROVIDER_YAML+="  - provider: \"azure-foundry\""$'\n'
+  FALLBACK_PROVIDER_YAML+="    model: \"${_model}\""$'\n'
+  FALLBACK_PROVIDER_YAML+="    base_url: \"${AZURE_FOUNDRY_BASE_URL}\""$'\n'
+  FALLBACK_PROVIDER_YAML+="    auth_mode: \"entra_id\""$'\n'
+done
+unset _seen_fallback_models _priority_models _raw_model _model
+
 # ---- shared secrets: derive, never re-declare -------------------------------------------------
 # Three processes must agree on two secrets, and each one is named DIFFERENTLY at each end:
 #
@@ -99,13 +124,7 @@ model:
   base_url: "${AZURE_FOUNDRY_BASE_URL}"
   auth_mode: "entra_id"
 fallback_providers:
-  - provider: "azure-foundry"
-    model: "${FALLBACK_MODEL_DEPLOYMENT_NAME}"
-    base_url: "${AZURE_FOUNDRY_BASE_URL}"
-    # A fallback is a separate provider profile. Without this it silently defaults to API-key
-    # authentication even though the primary uses Entra ID, masking the primary failure with the
-    # unrelated Azure "invalid subscription key" 401.
-    auth_mode: "entra_id"
+${FALLBACK_PROVIDER_YAML}
 agent:
   disabled_toolsets: ["file", "terminal", "code_execution", "browser", "project"]
 mcp_servers:
@@ -145,7 +164,7 @@ cp /tmp/hermes-config.yaml "$HERMES_STATE/config.yaml"
 mkdir -p /opt/data/.hermes
 cp /tmp/hermes-config.yaml /opt/data/.hermes/config.yaml
 cp /tmp/hermes-config.yaml /opt/data/config.yaml
-log "wrote config.yaml to $HERMES_STATE/.hermes/, $HERMES_STATE/ and /opt/data/ (primary=$MODEL_DEPLOYMENT_NAME fallback=$FALLBACK_MODEL_DEPLOYMENT_NAME)"
+log "wrote config.yaml to $HERMES_STATE/.hermes/, $HERMES_STATE/ and /opt/data/ (primary=$MODEL_DEPLOYMENT_NAME priority=$MODEL_PRIORITY)"
 log "config sanity: $(head -c 120 "$HERMES_STATE/.hermes/config.yaml" | tr '\n' ' ')"
 
 # Respawn wrapper. Output goes to the container's STDOUT, prefixed — redirecting to files hid the

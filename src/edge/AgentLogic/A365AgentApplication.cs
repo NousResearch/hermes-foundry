@@ -112,12 +112,40 @@ public class A365AgentApplication : AgentApplication
                     return;
                 }
 
-                // Let the user know the agent is working on the prompt.
-                // This is a no-op on channels that don't support streaming/typing updates.
-                await turnContext.StreamingResponse.QueueInformativeUpdateAsync(
-                    "Working on your request...",
-                    cancellationToken);
-                streamingStarted = true;
+                // Agent 365 documentation is explicit: Teams does not support streaming responses
+                // for agentic identities. The SDK buffers that "stream" into one message and the
+                // Teams stream handle expires while Hermes performs longer research/tool runs. We
+                // measured the failure at 122 seconds: Hermes completed, but EndStreamAsync's update
+                // of the original activity returned 403 and Teams rendered "This response was
+                // stopped". Use Microsoft's documented discrete-message pattern for Agent Users:
+                // one immediate acknowledgement and one independent final message. Keep streaming
+                // only for ordinary, non-agentic message traffic where the channel supports it.
+                var isAgenticTeams =
+                    string.Equals(turnContext.Activity.ChannelId, Channels.Msteams,
+                        StringComparison.OrdinalIgnoreCase)
+                    && AgenticAuthorization.IsAgenticRequest(turnContext);
+                if (isAgenticTeams)
+                {
+                    var progressActivity = await turnContext.SendActivityAsync(
+                        MessageFactory.Text("Working on your request..."),
+                        cancellationToken);
+                    // Keep only the channel-assigned ID for this turn. HermesRouter uses it to edit
+                    // this bot-owned activity as Hermes emits tool lifecycle events. This is NOT a
+                    // streaming handle and is never used for the final reply.
+                    if (!string.IsNullOrWhiteSpace(progressActivity?.Id))
+                    {
+                        turnContext.Services.Set(
+                            HermesRouter.HermesRouterAgentLogicService.ProgressActivityIdStateKey,
+                            progressActivity.Id);
+                    }
+                }
+                else
+                {
+                    await turnContext.StreamingResponse.QueueInformativeUpdateAsync(
+                        "Working on your request...",
+                        cancellationToken);
+                    streamingStarted = true;
+                }
 
                 // Execute logic
                 await agentService.NewActivityReceived(turnContext, turnState, cancellationToken);
@@ -198,6 +226,24 @@ public class A365AgentApplication : AgentApplication
             var agentNotificationActivity = new AgentNotificationActivity(turnContext.Activity);
             await agentService.HandleInstallationUpdateAsync(turnContext, turnState, agentNotificationActivity);
 		});
+
+        // Microsoft Teams starts the owner conversation with a conversationUpdate/membersAdded
+        // activity. This is also the welcome route used by Microsoft's current Agents SDK sample
+        // and by our earlier working Teams adapter. Foundry accepted this activity with HTTP 202
+        // even when no route was registered, which made the missing welcome look like a delivery
+        // failure. Keep installationUpdate above as a fallback for channels that emit it instead.
+        OnConversationUpdate(ConversationUpdateEvents.MembersAdded,
+            async (turnContext, turnState, cancellationToken) =>
+            {
+                _logger.LogInformation(
+                    "Received membersAdded welcome trigger with {MemberCount} member(s) (activity {ActivityId})",
+                    turnContext.Activity.MembersAdded?.Count ?? 0,
+                    turnContext.Activity.Id);
+
+                var agent = await GetAgentFromRecipient(turnContext.Activity);
+                var agentService = await _factory.CreateAsync(agent, turnContext, UserAuthorization);
+                await agentService.HandleMembersAddedAsync(turnContext, turnState, cancellationToken);
+            });
     }
 
     private async Task<AgentMetadata> GetAgentFromRecipient(IActivity activity)

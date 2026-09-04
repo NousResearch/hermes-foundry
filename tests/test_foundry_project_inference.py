@@ -77,7 +77,11 @@ class FoundryProjectInferenceTests(unittest.TestCase):
 
     def test_primary_and_fallback_are_both_entra_authenticated(self):
         start = (self.root / "start.sh").read_text()
-        self.assertGreaterEqual(start.count('auth_mode: "entra_id"'), 2)
+        self.assertIn('auth_mode: "entra_id"', start)
+        self.assertIn(
+            'FALLBACK_PROVIDER_YAML+="    auth_mode: \\"entra_id\\""',
+            start,
+        )
 
         dockerfile = (self.root / "Dockerfile").read_text()
         self.assertIn("apply_fallback_entra_patch.py", dockerfile)
@@ -114,6 +118,48 @@ class FoundryProjectInferenceTests(unittest.TestCase):
         self.assertIn("api-version={Uri.EscapeDataString(ApiVersion)}", source)
         self.assertIn('TryAddWithoutValidation("Foundry-Features", PreviewHeader)', source)
         self.assertIn('root.TryGetProperty("data", out var data)', source)
+
+    def test_routine_requests_forward_foundry_call_authority(self):
+        source = (
+            self.root / "src" / "edge" / "Services" / "RoutineBindingService.cs"
+        ).read_text()
+        self.assertIn('request?.Headers["x-agent-foundry-call-id"]', source)
+        self.assertIn(
+            'TryAddWithoutValidation("x-agent-foundry-call-id", foundryCallId)',
+            source,
+        )
+
+    def test_routine_diagnostics_log_identity_claims_not_bearer_token(self):
+        source = (
+            self.root / "src" / "edge" / "Services" / "RoutineBindingService.cs"
+        ).read_text()
+        self.assertIn("LogFoundryCaller(token.Token, foundryCallId)", source)
+        self.assertIn('Claim(claims, "oid")', source)
+        self.assertIn('Claim(claims, "appid")', source)
+        self.assertIn('Claim(claims, "azp")', source)
+        self.assertNotIn("logger.LogInformation(accessToken", source)
+        self.assertIn(
+            '[JsonPropertyName("foundry_call_id")] public string FoundryCallId',
+            source,
+        )
+
+    def test_code_progress_never_echoes_source(self):
+        source = (
+            self.root
+            / "src"
+            / "edge"
+            / "AgentLogic"
+            / "HermesRouter"
+            / "HermesRouterAgentLogicService.cs"
+        ).read_text()
+        self.assertIn(
+            '"run_code" or "execute_code" or "terminal" => "Running code"',
+            source,
+        )
+        self.assertNotIn(
+            '"run_code" or "execute_code" or "terminal" => WithPreview("Running code")',
+            source,
+        )
 
     def test_fired_routine_is_wrapped_as_immediate_execution(self):
         source = (

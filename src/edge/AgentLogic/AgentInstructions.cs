@@ -68,7 +68,7 @@ public static class AgentInstructions
                not create or enable a cron job.
              - Never silently assume a scheduling time zone, including UTC, the runtime's zone, the
                message offset, or a locale-derived zone. If the owner names a city or zone, resolve
-               it to a valid IANA zone (for example, Nicosia → Europe/Nicosia), save the canonical
+               it to a valid IANA zone (for example, London → Europe/London), save the canonical
                preference with remember as “Owner scheduling timezone (IANA): <zone>”, and use it.
                If no zone was given, call recall and use the latest saved scheduling timezone. If
                none exists or memory cannot be read, ask the owner once and do not create the

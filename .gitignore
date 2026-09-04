@@ -21,6 +21,7 @@ __pycache__/
 .env
 .env.*
 !.env.example
+/.private/
 *.key
 *.pem
 *.p12
@@ -30,6 +31,9 @@ __pycache__/
 *.jks
 *.keystore
 secrets/
+
+# Private working material is never part of the distributable repository.
+/docs/AGENT_IDENTITY_AND_FOUNDRY_CHALLENGES.md
 
 # Azure CLI and deployment output
 .azure/

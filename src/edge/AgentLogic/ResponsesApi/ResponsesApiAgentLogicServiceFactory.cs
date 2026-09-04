@@ -17,7 +17,8 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
     IConfiguration configuration,
     ILogger<ResponsesApiAgentLogicServiceFactory> logger,
     AgentTokenHelper tokenHelper,
-    RoutineBindingService routineBindings)
+    RoutineBindingService routineBindings,
+    ModelPolicyService modelPolicy)
 {
     private static readonly HttpClient HttpClient = new();
 
@@ -36,7 +37,8 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
                 "Using Hermes thin edge for agent {AgentId} (instance {InstanceId}); forwarding turn to sandbox-router.",
                 agent.AgentId, agent.AgentApplicationId);
             return new HermesRouter.HermesRouterAgentLogicService(
-                agent, configuration, logger, tokenHelper, userAuthorization, routineBindings);
+                agent, configuration, logger, tokenHelper, userAuthorization, routineBindings,
+                modelPolicy);
         }
 
         // LOGGING ONLY. These are the ids on a turn that DEMONSTRABLY works — the stock path that

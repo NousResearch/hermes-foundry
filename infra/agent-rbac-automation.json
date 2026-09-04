@@ -1,0 +1,200 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workflowName": {
+      "type": "string"
+    },
+    "location": {
+      "type": "string"
+    },
+    "blueprintClientId": {
+      "type": "string"
+    },
+    "projectScope": {
+      "type": "string"
+    },
+    "foundryUserRoleId": {
+      "type": "string"
+    },
+    "notBefore": {
+      "type": "string"
+    },
+    "pollMinutes": {
+      "type": "int",
+      "defaultValue": 5,
+      "minValue": 1,
+      "maxValue": 60
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01",
+      "name": "[parameters('workflowName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "state": "Enabled",
+        "parameters": {
+          "blueprintClientId": {
+            "value": "[parameters('blueprintClientId')]"
+          },
+          "projectScope": {
+            "value": "[parameters('projectScope')]"
+          },
+          "foundryUserRoleId": {
+            "value": "[parameters('foundryUserRoleId')]"
+          },
+          "notBefore": {
+            "value": "[parameters('notBefore')]"
+          }
+        },
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "blueprintClientId": {
+              "type": "String"
+            },
+            "projectScope": {
+              "type": "String"
+            },
+            "foundryUserRoleId": {
+              "type": "String"
+            },
+            "notBefore": {
+              "type": "String"
+            }
+          },
+          "triggers": {
+            "Every_few_minutes": {
+              "type": "Recurrence",
+              "recurrence": {
+                "frequency": "Minute",
+                "interval": "[parameters('pollMinutes')]"
+              }
+            }
+          },
+          "actions": {
+            "List_blueprint_agent_identities": {
+              "type": "Http",
+              "inputs": {
+                "method": "GET",
+                "uri": "@concat('https://graph.microsoft.com/v1.0/servicePrincipals/microsoft.graph.agentIdentity?$filter=agentIdentityBlueprintId%20eq%20%27', parameters('blueprintClientId'), '%27&$select=id,displayName,agentIdentityBlueprintId,createdDateTime')",
+                "headers": {
+                  "ConsistencyLevel": "eventual"
+                },
+                "authentication": {
+                  "type": "ManagedServiceIdentity",
+                  "audience": "https://graph.microsoft.com"
+                }
+              },
+              "runtimeConfiguration": {
+                "secureData": {
+                  "properties": [
+                    "inputs",
+                    "outputs"
+                  ]
+                }
+              }
+            },
+            "For_each_agent_identity": {
+              "type": "Foreach",
+              "foreach": "@body('List_blueprint_agent_identities')?['value']",
+              "runAfter": {
+                "List_blueprint_agent_identities": [
+                  "Succeeded"
+                ]
+              },
+              "runtimeConfiguration": {
+                "concurrency": {
+                  "repetitions": 1
+                }
+              },
+              "actions": {
+                "Created_after_automation_install": {
+                  "type": "If",
+                  "expression": "@greaterOrEquals(ticks(items('For_each_agent_identity')?['createdDateTime']), ticks(parameters('notBefore')))",
+                  "actions": {
+                    "List_identity_project_roles": {
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "@concat('https://management.azure.com', parameters('projectScope'), '/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01&$filter=principalId%20eq%20%27', items('For_each_agent_identity')?['id'], '%27')",
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "audience": "https://management.azure.com/"
+                        }
+                      }
+                    },
+                    "Foundry_User_is_missing": {
+                      "type": "If",
+                      "runAfter": {
+                        "List_identity_project_roles": [
+                          "Succeeded"
+                        ]
+                      },
+                      "expression": "@not(contains(toLower(string(body('List_identity_project_roles')?['value'])), toLower(parameters('foundryUserRoleId'))))",
+                      "actions": {
+                        "Assign_Foundry_User": {
+                          "type": "Http",
+                          "inputs": {
+                            "method": "PUT",
+                            "uri": "@concat('https://management.azure.com', parameters('projectScope'), '/providers/Microsoft.Authorization/roleAssignments/', guid(), '?api-version=2022-04-01')",
+                            "headers": {
+                              "Content-Type": "application/json"
+                            },
+                            "body": {
+                              "properties": {
+                                "roleDefinitionId": "@concat('/subscriptions/', split(parameters('projectScope'), '/')[2], '/providers/Microsoft.Authorization/roleDefinitions/', parameters('foundryUserRoleId'))",
+                                "principalId": "@items('For_each_agent_identity')?['id']",
+                                "principalType": "ServicePrincipal",
+                                "description": "Automatically assigned to a Hermes Agent Identity created from the configured blueprint."
+                              }
+                            },
+                            "authentication": {
+                              "type": "ManagedServiceIdentity",
+                              "audience": "https://management.azure.com/"
+                            }
+                          },
+                          "runtimeConfiguration": {
+                            "secureData": {
+                              "properties": [
+                                "inputs",
+                                "outputs"
+                              ]
+                            }
+                          }
+                        }
+                      },
+                      "else": {
+                        "actions": {}
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  }
+                }
+              }
+            }
+          },
+          "outputs": {}
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "workflowPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('workflowName')), '2019-05-01', 'Full').identity.principalId]"
+    },
+    "workflowResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', parameters('workflowName'))]"
+    }
+  }
+}

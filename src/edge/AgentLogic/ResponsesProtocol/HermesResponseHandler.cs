@@ -36,6 +36,7 @@ public sealed class HermesResponseHandler(
     IHttpClientFactory httpFactory,
     AgentUserAuthorizationService agentUserAuthorization,
     RoutineBindingService routineBindings,
+    ModelPolicyService modelPolicy,
     ILogger<HermesResponseHandler> logger) : ResponseHandler
 {
     private readonly string _routerUrl = (config["RouterUrl"] ?? "").TrimEnd('/');
@@ -76,11 +77,24 @@ public sealed class HermesResponseHandler(
         // than spawning a fresh one per run.
         var sessionKey = $"routine:{binding.AgentIdentityId}:{binding.RoutineName}";
 
-        EdgeLog("responses.in", $"chars={prompt.Length} session={sessionKey}");
+        // Routines have no Teams caller preference, so they always follow the administrator's
+        // priority list. Discovery is still project-scoped and cannot make an undeployed model
+        // callable. A deployment-time snapshot keeps existing behavior if this hosted identity can
+        // infer but does not have permission to enumerate deployments.
+        var modelSelection = await modelPolicy.ResolveAsync(sessionKey, ct);
+        if (!modelSelection.IsAvailable)
+            return "No chat-capable Foundry model deployment is currently available under " +
+                "the administrator's policy.";
+        prompt += "\n\n" + modelSelection.TrustedPromptContext;
+
+        EdgeLog("responses.in",
+            $"chars={prompt.Length} session={sessionKey} model={modelSelection.Model} " +
+            $"source={modelSelection.DiscoverySource}");
 
         var payload = JsonSerializer.Serialize(new
         {
-            model = "hermes-agent",
+            model = modelSelection.Model,
+            provider = "azure-foundry",
             messages = new[] { new { role = "user", content = prompt } }
         });
 

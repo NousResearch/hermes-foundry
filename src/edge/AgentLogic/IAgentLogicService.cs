@@ -36,6 +36,13 @@ public interface IAgentLogicService
     Task HandleInstallationUpdateAsync(ITurnContext turnContext, ITurnState turnState, AgentNotificationActivity installationEvent);
 
     /// <summary>
+    /// Handles the conversation update emitted when a person is added to the agent conversation.
+    /// Teams and Agent 365 use this event for the initial owner conversation, so it is the primary
+    /// welcome-message trigger. InstallationUpdate remains registered as a channel-dependent fallback.
+    /// </summary>
+    Task HandleMembersAddedAsync(ITurnContext turnContext, ITurnState turnState, CancellationToken cancellationToken);
+
+    /// <summary>
     /// Handles a standard activity protocol message
     /// </summary>
     /// <returns></returns>

@@ -101,13 +101,21 @@ _pending_attachments = []
 _attachments_lock = threading.Lock()
 
 
-def _drain_attachments():
-    """Pop everything registered this turn and render it as a response header for the edge."""
+def _take_attachments():
+    """Pop every attachment registered during this turn."""
     with _attachments_lock:
         items, _pending_attachments[:] = list(_pending_attachments), []
     if not items:
-        return {}
+        return []
     log(f"[edge] attach.handoff | {len(items)} file(s) -> edge")
+    return items
+
+
+def _drain_attachment_headers():
+    """Render turn attachments as a header for the legacy buffered response path."""
+    items = _take_attachments()
+    if not items:
+        return {}
     return {"X-Agent-Attachments": json.dumps(items, separators=(",", ":"))}
 
 
@@ -222,6 +230,80 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         return self.rfile.read(n) if n else b""
 
+    # ---- Hermes SSE -> edge SSE ---------------------------------------------------------------
+    #
+    # This is deliberately NOT Agent 365 / Teams response streaming. It is an internal connection
+    # from Hermes to our .NET edge. Hermes emits structured tool lifecycle events here; the edge
+    # turns those into ordinary UpdateActivity calls against the bot-owned progress message. The
+    # final Teams answer remains a separate SendActivity call, so a failed progress edit can never
+    # discard completed work.
+    #
+    # Attachments are registered while the stream is already open, too late for HTTP response
+    # headers. Therefore the streaming path sends one private `hermes.attachments` SSE event before
+    # Hermes' terminal [DONE]. The buffered fallback keeps the older response-header handoff.
+    def _relay_sse(self, upstream):
+        self.send_response(upstream.status)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+
+        tools_seen = 0
+        data_bytes = 0
+        attachments_sent = False
+
+        def write_chunk(payload):
+            if not payload:
+                return
+            self.wfile.write(b"%X\r\n%s\r\n" % (len(payload), payload))
+            self.wfile.flush()
+
+        def send_attachments():
+            nonlocal attachments_sent
+            if attachments_sent:
+                return
+            attachments_sent = True
+            items = _take_attachments()
+            if not items:
+                return
+            event = ("event: hermes.attachments\n"
+                     "data: " + json.dumps(items, separators=(",", ":")) + "\n\n").encode()
+            write_chunk(event)
+
+        try:
+            for line in upstream:
+                if line.startswith(b"event: hermes.tool.progress"):
+                    tools_seen += 1
+                elif line.startswith(b"data: "):
+                    data_bytes += len(line)
+
+                # The edge stops reading when it sees [DONE], so the private attachment event must
+                # precede that marker. Preserve every original Hermes byte otherwise.
+                if line.strip() == b"data: [DONE]":
+                    send_attachments()
+                write_chunk(line)
+
+            # Defensive fallback for an upstream that closes without [DONE].
+            send_attachments()
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+            log(f"[edge] hermes.stream.done | events={tools_seen} data_bytes={data_bytes}")
+        except Exception as e:                  # noqa: BLE001 - client or upstream disconnected
+            log(f"[edge] hermes.stream.broken | {type(e).__name__}: {e} | "
+                f"after {data_bytes} data bytes")
+            # Headers and some chunks are already on the wire, so an ordinary error JSON document
+            # would corrupt the SSE framing. If the edge is still connected, finish with a valid
+            # private error event and terminal marker; if it is the disconnected side, these writes
+            # simply fail and the handler closes. Leave attachments for next-turn stale cleanup.
+            try:
+                detail = json.dumps({"message": f"Hermes stream failed: {type(e).__name__}"})
+                write_chunk(("event: hermes.error\n" f"data: {detail}\n\n").encode())
+                write_chunk(b"data: [DONE]\n\n")
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except Exception:
+                pass
+
     def do_GET(self):
         if self.path in ("/healthz", "/"):
             self._send(200, b'{"ok":true}')
@@ -327,9 +409,28 @@ class Handler(BaseHTTPRequestHandler):
                 _agent_token["token"] = ""
                 log("[edge] agent.token.cleared | current turn supplied none")
 
+            # Hermes' stream is the source of structured tool progress and 30-second keepalives.
+            # If an older or alternate Hermes ignores the flag, the response-content-type branch
+            # below retains the working buffered path.
+            body = raw
+            want_stream = True
+            try:
+                parsed = json.loads(raw or b"{}")
+                if isinstance(parsed, dict):
+                    want_stream = bool(parsed.get("stream", True))
+                    if want_stream and "stream" not in parsed:
+                        parsed["stream"] = True
+                        body = json.dumps(parsed).encode()
+                else:
+                    want_stream = False
+            except Exception:                   # Hermes owns malformed-request validation
+                want_stream = False
+
             req = urllib.request.Request(
-                f"{HERMES_URL}/v1/chat/completions", data=raw, method="POST"
+                f"{HERMES_URL}/v1/chat/completions", data=body, method="POST"
             )
+            if want_stream:
+                req.add_header("Accept", "text/event-stream")
             req.add_header("Content-Type", "application/json")
             if HERMES_KEY:
                 req.add_header("Authorization", f"Bearer {HERMES_KEY}")
@@ -355,6 +456,10 @@ class Handler(BaseHTTPRequestHandler):
             while True:
                 try:
                     with urllib.request.urlopen(req, timeout=UPSTREAM_TIMEOUT) as r:
+                        if (r.headers.get("Content-Type") or "").startswith("text/event-stream"):
+                            self._relay_sse(r)
+                            return
+
                         payload = r.read()
                         # Log WHAT HERMES ACTUALLY ANSWERED. The gateway is the only component that
                         # sees this body before it is turned into a Teams message, and on 2026-08-17
@@ -398,7 +503,7 @@ class Handler(BaseHTTPRequestHandler):
                         # parse failure for a feature that is meant to be additive. A header is
                         # invisible to anything that does not look for it.
                         self._send(r.status, payload,
-                                   extra_headers=_drain_attachments())
+                                   extra_headers=_drain_attachment_headers())
                     return
                 except urllib.error.HTTPError as e:
                     detail = e.read()[:500].decode("utf-8", "replace")

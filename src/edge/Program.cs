@@ -5,6 +5,7 @@ using HelloWorldA365.AgentLogic;
 using HelloWorldA365.AgentLogic.ResponsesApi;
 using HelloWorldA365.Services;
 using Microsoft.Agents.Builder;
+using Microsoft.Agents.Builder.App;
 using Microsoft.Agents.Hosting.AspNetCore;
 using Microsoft.Agents.Storage;
 
@@ -37,12 +38,25 @@ else
 
 // Add controllers support
 builder.Services.AddControllers();
+builder.Services.AddHttpContextAccessor();
 
 // ===================================
 // These are needed for Agent SDK
 // ===================================
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<IStorage, MemoryStorage>();
+
+// Teams puts uploaded files on ordinary message activities as M365 attachment URLs.
+// AgentApplication only turns the ordinary Teams payload into Temp.InputFiles when a downloader is
+// registered, so keep Microsoft's downloader as the first path. Agent 365 Autopilot can send a
+// different payload (bare SharePoint contentUrl, no content.downloadUrl); the router
+// handles that shape separately through Graph as the Agent User after the SDK returns no bytes.
+builder.Services.AddSingleton<IList<IInputFileDownloader>>(services =>
+[
+    new M365AttachmentDownloader(
+        services.GetRequiredService<Microsoft.Agents.Authentication.IConnections>(),
+        services.GetRequiredService<IHttpClientFactory>())
+]);
 builder.AddAgentApplicationOptions();
 
 builder.AddAgent<A365AgentApplication>();
@@ -84,6 +98,9 @@ builder.Services.AddTokenAcquisition(isTokenAcquisitionSingleton: true);
 builder.Services.AddInMemoryTokenCaches();
 builder.Services.AddAgentIdentities();
 builder.Services.AddSingleton<AgentUserAuthorizationService>();
+// Project-scoped model inventory and per-caller Teams model selection. The service only enumerates
+// existing Foundry deployments; it cannot deploy a model or expand anybody's Azure permissions.
+builder.Services.AddSingleton<ModelPolicyService>();
 // Creates instance-bound routines during verified owner turns and verifies their immutable action
 // when Foundry later invokes the Responses protocol without an Activity turn.
 builder.Services.AddSingleton<RoutineBindingService>();

@@ -48,17 +48,12 @@ public class AgentTokenHelper(ILogger<AgentTokenHelper> logger)
 
     private async Task<AccessToken> GetBlueprintToken(string clientId)
     {
-        // REVERTED 2026-08-10. This must stay PINNED to the blueprint's client id.
-        //
-        // I briefly changed it to try an ambient DefaultAzureCredential first, reasoning that the
-        // blueprint's federated credentials name the project managed identity rather than the
-        // blueprint. That reasoning was wrong and it BROKE THE WORKING TEAMS PATH: the ambient
-        // credential yields a subject Entra rejects with
+        // This must stay pinned to the blueprint's client id. An ambient
+        // DefaultAzureCredential represents the project managed identity rather than the
+        // blueprint and yields a subject Entra rejects with
         //   AADSTS70070 "... is not a valid agent identity credential subject"
-        // and the stock ResponsesApi path — the one that had successfully read the agent's mailbox
-        // hours earlier — started failing on every Teams message.
-        //
-        // Do not "improve" this without a test that exercises Teams end to end first.
+        // and breaks Agent User token acquisition on Teams turns. Any credential-path change must
+        // be verified with an end-to-end Teams identity test.
         var credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions
         {
             ManagedIdentityClientId = clientId,
