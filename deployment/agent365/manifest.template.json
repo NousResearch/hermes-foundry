@@ -1,0 +1,32 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/vdevPreview/MicrosoftTeams.schema.json",
+  "id": "__BLUEPRINT_ID__",
+  "name": {
+    "short": "Hermes Agent on Foundry",
+    "full": "Hermes Agent on Foundry"
+  },
+  "description": {
+    "short": "A Hermes AI colleague with its own Microsoft 365 identity.",
+    "full": "Hermes Agent on Foundry is an AI colleague hosted in your Microsoft Foundry project. Each instance receives its own Microsoft 365 identity, mailbox, OneDrive, Teams presence, and separately governed access. It can research the web, work with email and calendars, create and edit documents, share files, and run approved scheduled routines under its own auditable identity."
+  },
+  "icons": {
+    "outline": "outline.png",
+    "color": "color.png"
+  },
+  "accentColor": "#D4AF37",
+  "version": "__APP_VERSION__",
+  "manifestVersion": "devPreview",
+  "developer": {
+    "name": "Nous Research",
+    "mpnId": "",
+    "websiteUrl": "https://nousresearch.com",
+    "privacyUrl": "https://nousresearch.com/privacy",
+    "termsOfUseUrl": "https://nousresearch.com/terms"
+  },
+  "agenticUserTemplates": [
+    {
+      "id": "__TEMPLATE_ID__",
+      "file": "agenticUserTemplateManifest.json"
+    }
+  ]
+}

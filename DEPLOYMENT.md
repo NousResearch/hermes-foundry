@@ -5,17 +5,16 @@ It is written for an administrator who is new to Azure, Microsoft Foundry, Micro
 Microsoft 365.
 
 > [!IMPORTANT]
-> This is currently an **operator runbook, not a one-command installer**. The repository can build
-> the Hermes image and update an existing hosted agent, but it does not yet contain the sanitized
-> infrastructure package that creates the first Foundry account, project, registry, hosted agent,
-> Agent 365 blueprint, permissions, and initial environment. That package is tracked as a release
-> blocker below. Do not tell a new organization that a clean clone is sufficient for a zero-to-one
-> deployment yet.
+> This is the lower-level operator and troubleshooting reference. For the current end-to-end
+> administrator journey, including creation of a fresh hosted-agent blueprint and a manual-upload
+> Agent 365 ZIP, start with [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md). Azure
+> resource creation is still an administrator-led portal procedure rather than a one-command IaC
+> deployment.
 
 The procedure records what worked, including the quota, role, permission-inheritance, identity,
 and hosted-container problems encountered during the original deployment. Microsoft changes these
-preview and recently released services frequently. The licensing section was checked against
-Microsoft documentation on 2026-08-19; verify it again before purchasing licenses.
+preview and recently released services frequently. The tenant-admin guide's prerequisites were
+checked against Microsoft documentation on 2026-09-04; verify them again before purchasing licenses.
 
 ## 1. What gets created
 

@@ -16,9 +16,11 @@ There are two very different deployment tasks:
 
 1. **First installation into a Microsoft organization.** An administrator must create and connect
    Microsoft 365, Agent 365, Entra identity, Azure, Foundry, models, permissions, and an initial
-   hosted-agent version. Start with [DEPLOYMENT.md](DEPLOYMENT.md). This remains
-   maintainer-assisted because the sanitized zero-to-one infrastructure installer is not yet in
-   this repository.
+   hosted-agent version. Start with
+   [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md). It includes the current manual
+   portal flow, the safe new-blueprint command, the Agent 365 upload package, approval, model
+   controls, and validation. [DEPLOYMENT.md](DEPLOYMENT.md) remains the lower-level operator and
+   troubleshooting reference.
 2. **Building or updating Hermes after that installation exists.** This repository can build the
    complete container and safely create a new version of an existing hosted agent. That is the
    shorter workflow documented below.
@@ -42,9 +44,11 @@ layers this repository's components on top. There is therefore no Hermes source 
 separate Hermes download script here. See [Dockerfile](Dockerfile) for the exact pinned digest and
 [DEPLOYMENT.md §10](DEPLOYMENT.md#10-build-and-publish-the-hermes-container) for the build flow.
 
-The application build does not reach into another local repository. The missing part is the
-sanitized infrastructure-as-code package for creating the first tenant stack; its required behavior
-is documented in [DEPLOYMENT.md §8](DEPLOYMENT.md#8-bootstrap-the-first-foundry-and-agent-365-stack).
+The application build does not reach into another local repository. Azure resource creation is
+currently a documented administrator-led portal procedure rather than one-click infrastructure as
+code. Once the Foundry project, models, and registry exist, this repository can build the image,
+create a new hosted agent and its Foundry-managed blueprint, and generate a tenant-specific ZIP for
+manual Microsoft 365 admin-center upload.
 
 ## Architecture
 
@@ -96,6 +100,7 @@ src/hermes-patches/ build-time compatibility overlays for the pinned Hermes imag
 tests/          sidecar unit tests
 infra/          tenant-admin Azure automation templates
 scripts/        installation and removal commands for that automation
+deployment/     tenant-neutral Microsoft 365 package templates
 Dockerfile      combined hosted-agent image
 start.sh        process startup and supervision
 build.sh        local publish and Azure Container Registry build
@@ -103,13 +108,14 @@ new-version.sh  safe hosted-agent version creation and verification
 ```
 
 Generated publish directories (`edge/`, `gateway/`, and `sidecar/`) are ignored and created by
-`build.sh`.
+`build.sh`. Tenant-specific blueprint records and upload ZIPs are written below the ignored
+`deployment-output/` directory.
 
 ## Which instructions should I follow?
 
 ### I am deploying to a new organization
 
-Follow [DEPLOYMENT.md from the beginning](DEPLOYMENT.md). It covers:
+Follow [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md) from the beginning. It covers:
 
 - Microsoft 365 and Agent 365 licensing;
 - the Azure subscription and administrator roles;
@@ -117,10 +123,12 @@ Follow [DEPLOYMENT.md from the beginning](DEPLOYMENT.md). It covers:
 - the agent identity blueprint, Graph consent, and inheritable permissions;
 - creating the Agent User and waiting for mailbox/OneDrive provisioning;
 - building this image, creating a version, and testing mail and files; and
-- the current installer limitations.
+- optional model, cost, hiring, session, observability, and routine controls.
 
-The current repository is not a one-command new-tenant installer. In particular,
-`new-version.sh` cannot create the first hosted agent—it needs a valid serving version to clone.
+The current repository is not a one-command Azure infrastructure installer. However,
+`scripts/create-hosted-blueprint.sh` creates a first hosted agent safely after the Foundry project,
+models, registry, and image exist. `new-version.sh` remains the update command for an existing
+serving agent.
 
 ### I already have a provisioned Hermes Foundry stack
 
