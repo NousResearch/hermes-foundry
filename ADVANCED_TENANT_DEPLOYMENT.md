@@ -43,6 +43,12 @@ For the own-identity Autopilot path used here, Microsoft currently requires all 
   365 E7; and
 - an available Microsoft Agent 365 Frontier license.
 
+Complete Steps 1 and 2 of
+[TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md) for the direct purchase pages, license
+assignment procedure, Frontier terms acceptance, and preview-seat verification. Complete Step 5 of
+that guide for the exact Microsoft Graph consent procedure. Do not assign an ordinary human license
+to the Agent User created by Microsoft's managed **Create instance** flow.
+
 Eligible enrolled tenants currently receive a 25-seat preview subscription. Each Autopilot instance
 consumes one of those seats because it creates an Agent User. This is a preview allocation, not a
 documented production purchasing path for hundreds or thousands of instances.

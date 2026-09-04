@@ -26,31 +26,140 @@ Microsoft performs the managed instance provisioning. Each instance receives a s
 Identity and Agent User. When the required workload and license are available, Microsoft provisions
 the instance's Teams presence, mailbox, calendar, OneDrive, and directory profile.
 
-## Before starting
+## Administrator accounts required
+
+Use a **Global Administrator** for the initial Frontier enrollment and first blueprint approval.
+Microsoft documents **Global Administrator** or **AI Administrator** for approving a published
+blueprint, but only a Global Administrator can accept the current Agent 365 Frontier terms. A
+**Billing Administrator** can purchase licenses if the organization separates billing duties.
 
 Have the following ready:
 
-- a tenant administrator account with **Global Administrator** or **AI Administrator** access;
-- Agent 365 Frontier enabled from
-  [Agent 365 Overview](https://admin.cloud.microsoft/#/agents/overview): select **Try now** and
-  accept the Agent 365 terms;
-- an available Microsoft Agent 365 Frontier agent seat;
-- either a pending **Hermes Agent on Foundry** request in the Microsoft 365 admin center or a
-  tenant-specific ZIP supplied by Nous; and
-- a user or security group for the initial pilot.
+- the employee who will own or manage the first Hermes instance;
+- a user or security group for the initial hiring scope;
+- either a pending **Hermes Agent on Foundry** request or a tenant-specific ZIP supplied by Nous;
+  and
+- access to the tenant's Microsoft 365 and Azure billing accounts.
 
-After accepting the terms, open
-[Billing > Licenses](https://admin.cloud.microsoft/#/licenses) and confirm that the tenant has an
-available **Microsoft 365 Frontier for AI Teammates** seat. The current Frontier allocation is
-intended for evaluation; large production licensing and automated cross-tenant distribution remain
-dependent on Microsoft's commercial and platform availability.
+## Step 1: buy and assign the required licenses
 
-## Step 1: find the Hermes blueprint
+### 1.1 Check what the tenant already owns
+
+1. Open [Billing > Your products](https://admin.cloud.microsoft/#/subscriptions).
+2. Check whether the tenant already has at least one of these qualifying products:
+   - **Microsoft Agent 365**;
+   - **Microsoft 365 Copilot**; or
+   - **Microsoft 365 E7**, which includes Agent 365.
+3. Open [Billing > Licenses](https://admin.cloud.microsoft/#/licenses), select the qualifying
+   product, and confirm that it is assigned to the employee who will own or manage the first Hermes
+   instance.
+
+These are alternatives; do not buy all three. Do not purchase another product when the tenant
+already has a suitable one. The current Foundry
+Autopilot prerequisites require the tenant to have at least one qualifying Agent 365, Microsoft 365
+Copilot, or Microsoft 365 E7 license before Frontier can provision agent seats.
+
+### 1.2 Buy a qualifying product when none is present
+
+1. Open [Billing > Purchase services](https://admin.cloud.microsoft/#/catalog).
+2. Search for one of the following products and select **Details**:
+   - **Microsoft Agent 365** when the tenant already has an eligible Microsoft 365 base subscription
+     and needs Agent 365 separately;
+   - **Microsoft 365 Copilot** when the selected employees also need Microsoft 365 Copilot; or
+   - **Microsoft 365 E7** when the organization wants the full E7 package, including Agent 365.
+3. Review the prerequisite shown by Microsoft for the tenant's existing base subscription.
+4. Select **Buy**, choose the required number of human-user seats, select the billing frequency, and
+   complete checkout.
+5. If **Buy** is unavailable because the tenant purchases through an Enterprise Agreement or Cloud
+   Solution Provider, use the organization's Microsoft reseller or the **Contact Sales** action on
+   the [Agent 365 plans page](https://www.microsoft.com/en-us/microsoft-agent-365#plans-and-pricing).
+
+Agent 365 is licensed per human user at general availability. Purchase and assign it to the people
+who own, sponsor, manage, or use governed agents according to the organization's licensing plan. Do
+not assign this human-user license to the Hermes Agent User.
+
+### 1.3 Assign the purchased license
+
+1. Open [Billing > Licenses](https://admin.cloud.microsoft/#/licenses).
+2. Select the purchased product.
+3. Select **Assign licenses**.
+4. Add the employee who will own or manage the first Hermes instance. For the initial setup, also
+   assign the qualifying license to the Global Administrator if the Agent 365 or Frontier controls
+   are not visible to that administrator.
+5. Save and wait for Microsoft 365 to show the assignment as active.
+
+If Microsoft 365 Copilot was selected, its purchase screen might require an eligible Microsoft 365
+base subscription. Purchase any missing prerequisite from the same
+[Purchase services](https://admin.cloud.microsoft/#/catalog) page before assigning Copilot.
+
+### 1.4 Confirm Teams access
+
+Employees need Microsoft Teams access only when Teams will be used as a Hermes channel. Existing
+Microsoft 365 enterprise subscriptions commonly provide it, but Teams is sold separately in some
+regions and plans.
+
+1. Open [Billing > Licenses](https://admin.cloud.microsoft/#/licenses) and check that the pilot
+   employee has a product containing Microsoft Teams.
+2. If not, open [Purchase services](https://admin.cloud.microsoft/#/catalog), search for
+   **Microsoft Teams Enterprise** or the Teams product appropriate for the tenant, purchase it, and
+   assign it to the employee.
+
+The agent-specific Frontier seat is separate from the human employee's Teams entitlement.
+
+### License checklist
+
+| Item | Who receives it | How it is obtained | Direct page |
+| --- | --- | --- | --- |
+| Agent 365, Microsoft 365 Copilot, or Microsoft 365 E7 | Human owner/manager | Buy only if the tenant has no qualifying product | [Purchase services](https://admin.cloud.microsoft/#/catalog) |
+| Microsoft 365 Frontier for AI Teammates | One seat per Hermes instance | Microsoft adds 25 preview seats after Frontier enrollment; it is not bought separately | [Licenses](https://admin.cloud.microsoft/#/licenses) |
+| Microsoft Teams | Human employees using the Teams channel | Existing Microsoft 365 plan or separate Teams purchase | [Purchase services](https://admin.cloud.microsoft/#/catalog) |
+| Azure subscription | Tenant or Nous deployment account, not a person | Consumption-billed Azure subscription; this is not a Microsoft 365 license | [Azure subscriptions](https://portal.azure.com/#view/Microsoft_Azure_Billing/SubscriptionsBladeV2) |
+
+## Step 2: enable Agent 365 Frontier and accept its terms
+
+This consent enables the tenant-level preview in which Autopilot instances receive their own Agent
+Identity, Agent User, and Microsoft 365 workload provisioning.
+
+1. Sign in as **Global Administrator**.
+2. Open [Agent 365 Overview](https://admin.cloud.microsoft/#/agents/overview).
+3. In the Agent 365 Frontier banner, select **Try now**.
+4. Read the preview notice and select **I agree to the Terms of Service**.
+5. Wait for the success confirmation.
+6. Open [Billing > Licenses](https://admin.cloud.microsoft/#/licenses).
+7. Confirm that **Microsoft 365 Frontier for AI Teammates** now appears with 25 active seats.
+
+Do not buy those 25 agent seats and do not assign them to human users. Microsoft consumes one seat
+automatically each time the managed **Create instance** flow creates a Hermes Agent User. If the
+product does not appear, confirm that Step 1 is complete, sign out and back in, and then return to
+[Agent 365 Overview](https://admin.cloud.microsoft/#/agents/overview).
+
+If pilot users need access to other Frontier features, open
+[Copilot Frontier settings](https://admin.cloud.microsoft/#/copilot/settings/ViewAll/:/CopilotSettings/Frontier)
+and select **Specific users**, then add the pilot group. This audience setting is separate from the
+Hermes blueprint's hiring scope.
+
+## Step 3: confirm the Azure subscription used by Hermes
+
+This is not a license or an OAuth consent. Foundry hosting, models, registry, logging, and routines
+are charged to an Azure subscription.
+
+1. Open [Azure subscriptions](https://portal.azure.com/#view/Microsoft_Azure_Billing/SubscriptionsBladeV2).
+2. Confirm that the subscription selected for Hermes is **Active** and belongs to the same Entra
+   tenant.
+3. If Nous operates the prepared runtime, record the Nous-provided subscription arrangement and do
+   not create a second subscription.
+4. If the customer operates the runtime and no subscription exists, select **Add** on that page or
+   use the organization's Microsoft account team/CSP to create one.
+
+The no-CLI installation can continue only after Nous or the deployment operator has published a
+tenant-ready Hermes blueprint using that runtime.
+
+## Step 4: find the Hermes blueprint
 
 1. Open [Agents > All agents > Requests](https://admin.cloud.microsoft/#/agents/all/requested).
 2. Look for **Hermes Agent on Foundry** with the status **Pending activate**.
 
-If it is present, select it and continue to Step 2.
+If it is present, select it and continue to Step 5.
 
 If Nous supplied a tenant-specific package instead:
 
@@ -62,7 +171,7 @@ If Nous supplied a tenant-specific package instead:
 If neither option is available, stop here. The runtime and target-tenant blueprint have not yet been
 prepared; use the advanced deployment guide rather than trying to create identity objects manually.
 
-## Step 2: review and activate it
+## Step 5: review permissions, grant consent, and activate Hermes
 
 Use the Microsoft publication wizard for **Hermes Agent on Foundry**.
 
@@ -73,19 +182,60 @@ Use the Microsoft publication wizard for **Hermes Agent on Foundry**.
    - choose **All users** only when every employee should be allowed to create an instance; or
    - choose **None** when instances will be created only by administrators.
 4. Apply the organization's Agent 365 policy template, if one is configured.
-5. Review the requested Microsoft Graph permissions.
-6. Grant tenant admin consent only for the approved permissions.
+5. On **Accept permissions**, review the requested Microsoft Graph permissions listed below.
+6. Select **Grant admin consent**. Sign in again as the Global Administrator if Microsoft prompts.
 7. Select **Publish** or **Activate** and wait until the agent is shown as **Available**.
 
-Hermes currently declares the permissions needed for its own mailbox, calendar, OneDrive, sharing,
-Teams chat, and directory lookup. The exact consent screen is authoritative. If its permissions do
-not match the approved deployment, do not activate it; return the package to the deployment operator.
+The current Hermes blueprint requests one tenant admin consent containing these delegated,
+inheritable Microsoft Graph permissions:
+
+| Permission | What Hermes uses it for |
+| --- | --- |
+| `Chat.ReadWrite` | Read and respond in its permitted Microsoft Teams chats |
+| `Mail.ReadWrite` | Read, organize, create, and update messages in its own mailbox |
+| `Mail.Send` | Send mail from its own mailbox |
+| `Calendars.ReadWrite` | Read and manage events in its own calendar |
+| `Files.ReadWrite.All` | Read, create, edit, and share files available to its Agent User |
+| `Sites.ReadWrite.All` | Work with permitted SharePoint sites and libraries |
+| `User.Read.All` | Resolve people and directory identities needed for collaboration |
+| `User.ReadBasic.All` | Read basic profiles used for people selection and display |
+
+These scopes define what an Agent Identity may request; they do not automatically share every
+employee's files, mail, or sites with Hermes. Resource access still follows Microsoft 365 sharing,
+membership, and policy. The exact permission screen shown by Microsoft is authoritative. If it
+differs from this table, do not grant consent or activate the blueprint; return it to the deployment
+operator.
+
+Do not repeat these permissions as eight separate consent operations. The **Grant admin consent**
+button in the Hermes publication wizard grants the approved set to the tenant-specific blueprint in
+one operation. Employees do not sign into Hermes or grant their personal OAuth access because Hermes
+acts as its own Agent User.
+
+To verify or later revoke the consent, open
+[Entra Enterprise applications](https://entra.microsoft.com/#view/Microsoft_AAD_IAM/StartboardApplicationsMenuBlade/~/AppAppsPreview),
+search for the Hermes blueprint's enterprise application, and open **Security > Permissions**. Do
+not modify permissions there during normal installation; the Microsoft 365 publication wizard is the
+authoritative installation flow.
 
 The approval above is for the reusable blueprint. Employees included in the hiring scope can then
 create instances without a separate per-instance approval. Restrict the hiring scope when the
 organization needs centralized approval or naming control.
 
-## Step 3: create the first Hermes instance
+### Consent and approval checklist
+
+| Action | Who performs it | Where | Required once or repeatedly? |
+| --- | --- | --- | --- |
+| Accept Agent 365 Frontier terms | Global Administrator | [Agent 365 Overview](https://admin.cloud.microsoft/#/agents/overview) > **Try now** | Once per tenant |
+| Enable Frontier for pilot users, if required | Global Administrator | [Copilot Frontier settings](https://admin.cloud.microsoft/#/copilot/settings/ViewAll/:/CopilotSettings/Frontier) | Once per audience; change when the pilot group changes |
+| Approve the Hermes blueprint and its Graph scopes | Global Administrator, or AI Administrator where tenant consent policy permits | [Agents > Requests](https://admin.cloud.microsoft/#/agents/all/requested) > Hermes > **Accept permissions** | Once for the tenant-specific blueprint permission set; repeat when a later version requests new scopes |
+| Choose the Hermes policy template and hiring scope | Global Administrator or AI Administrator | The same Hermes publication wizard | Once at publication; administrators can change policy and scope later |
+| Give Hermes access to a document, site, mailbox, team, or other resource | Resource owner or Microsoft 365 administrator | The normal SharePoint, OneDrive, Exchange, or Teams sharing UI | Per resource, group, or policy |
+
+Azure role assignments used by the hosted runtime and routines are RBAC, not Microsoft Graph
+consent. They belong to the one-time advanced deployment. There is no employee OAuth-consent step
+in this own-identity design.
+
+## Step 6: create the first Hermes instance
 
 There are two supported UI paths.
 
@@ -98,7 +248,8 @@ Use this path when IT must control the name, alias, owner, or rollout order.
 2. Select **Create instance**.
 3. Choose the employee who will own or manage the instance.
 4. Enter the approved display name, alias/domain, and manager fields offered by Microsoft.
-5. Confirm the available Agent 365 license and create the instance.
+5. Confirm that a **Microsoft 365 Frontier for AI Teammates** seat is available and create the
+   instance.
 
 ### Employee-created instance
 
@@ -115,7 +266,7 @@ naming or a separate per-instance approval is required, use the administrator-cr
 the hiring scope to **None** or a tightly controlled group. This repository does not replace
 Microsoft's managed Create Instance pipeline.
 
-## Step 4: wait for Microsoft provisioning
+## Step 7: wait for Microsoft provisioning
 
 Instance creation is asynchronous. Wait until Microsoft reports the instance as ready. Do not test
 mail or files while the identity or workloads are still provisioning.
@@ -125,13 +276,13 @@ After completion, confirm that:
 - the instance has its own Agent Identity and Agent User;
 - the instance is visible as a distinct colleague in Teams and the directory;
 - the intended employee is its owner or manager;
-- its Agent 365 license is assigned; and
+- one Frontier for AI Teammates seat was consumed for the instance; and
 - the user can open a chat with it.
 
 Mailbox and OneDrive readiness can lag behind identity creation. If those tools initially report
 that the resource cannot be found, wait for workload provisioning and retry before changing access.
 
-## Step 5: perform a short acceptance test
+## Step 8: perform a short acceptance test
 
 From the owner's Teams chat, ask Hermes to perform read-only checks first:
 
