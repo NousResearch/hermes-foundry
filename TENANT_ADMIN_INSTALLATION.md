@@ -41,52 +41,53 @@ Have the following ready:
   and
 - access to the tenant's Microsoft 365 and Azure billing accounts.
 
-## Step 1: buy and assign the required licenses
+## Step 1: satisfy the tenant-level Frontier prerequisite
 
 ### 1.1 Check what the tenant already owns
 
 1. Open [Billing > Your products](https://admin.cloud.microsoft/#/subscriptions).
-2. Check whether the tenant already has at least one of these qualifying products:
-   - **Microsoft Agent 365**;
-   - **Microsoft 365 Copilot**; or
-   - **Microsoft 365 E7**, which includes Agent 365.
-3. Open [Billing > Licenses](https://admin.cloud.microsoft/#/licenses), select the qualifying
-   product, and confirm that it is assigned to the employee who will own or manage the first Hermes
-   instance.
+2. Look specifically for **Microsoft 365 Copilot** with SKU part number
+   `Microsoft_365_Copilot`.
+3. Open [Billing > Licenses](https://admin.cloud.microsoft/#/licenses), select **Microsoft 365
+   Copilot**, and confirm that at least one seat is active and assigned to the Global Administrator
+   performing the Frontier enrollment.
 
-These are alternatives; do not buy all three. Do not purchase another product when the tenant
-already has a suitable one. The current Foundry
-Autopilot prerequisites require the tenant to have at least one qualifying Agent 365, Microsoft 365
-Copilot, or Microsoft 365 E7 license before Frontier can provision agent seats.
+This is a tenant-level prerequisite in the path tested by Nous. It is not a license for a Hermes
+instance and it does not need to be assigned to every employee who receives a Hermes instance.
+Microsoft's current documentation also names Microsoft Agent 365 and Microsoft 365 E7 as possible
+qualifying products, but Nous has not validated those substitutions end to end for this specific
+Frontier Autopilot flow.
 
-### 1.2 Buy a qualifying product when none is present
+### 1.2 Buy the tested prerequisite when it is absent
 
 1. Open [Billing > Purchase services](https://admin.cloud.microsoft/#/catalog).
-2. Search for one of the following products and select **Details**:
-   - **Microsoft Agent 365** when the tenant already has an eligible Microsoft 365 base subscription
-     and needs Agent 365 separately;
-   - **Microsoft 365 Copilot** when the selected employees also need Microsoft 365 Copilot; or
-   - **Microsoft 365 E7** when the organization wants the full E7 package, including Agent 365.
-3. Review the prerequisite shown by Microsoft for the tenant's existing base subscription.
-4. Select **Buy**, choose the required number of human-user seats, select the billing frequency, and
-   complete checkout.
-5. If **Buy** is unavailable because the tenant purchases through an Enterprise Agreement or Cloud
+2. Search for **Microsoft 365 Copilot** and select **Details**.
+3. Check that the product SKU is `Microsoft_365_Copilot`. Do not buy **Microsoft 365 Copilot
+   Business** (`MICROSOFT_365_COPILOT_FOR_BUSINESS`) for this runbook. The Business SKU passed part
+   of enrollment in our testing but did not expose the complete Frontier blueprint flow.
+4. Review the prerequisite shown by Microsoft for the tenant's existing base subscription.
+5. Select **Buy**, purchase one seat for the initial tenant activation, select the billing frequency,
+   and complete checkout.
+6. If **Buy** is unavailable because the tenant purchases through an Enterprise Agreement or Cloud
    Solution Provider, use the organization's Microsoft reseller or the **Contact Sales** action on
    the [Agent 365 plans page](https://www.microsoft.com/en-us/microsoft-agent-365#plans-and-pricing).
 
-Agent 365 is licensed per human user at general availability. Purchase and assign it to the people
-who own, sponsor, manage, or use governed agents according to the organization's licensing plan. Do
-not assign this human-user license to the Hermes Agent User.
+Standalone Agent 365 and Microsoft 365 E7 have their own per-human commercial licensing rules for
+Agent 365 governance. Those rules are separate from the technical creation of the Hermes Agent User.
+Neither a Copilot nor an Agent 365 human license is assigned to a Hermes instance in this Frontier
+flow.
 
 ### 1.3 Assign the purchased license
 
 1. Open [Billing > Licenses](https://admin.cloud.microsoft/#/licenses).
-2. Select the purchased product.
+2. Select **Microsoft 365 Copilot**.
 3. Select **Assign licenses**.
-4. Add the employee who will own or manage the first Hermes instance. For the initial setup, also
-   assign the qualifying license to the Global Administrator if the Agent 365 or Frontier controls
-   are not visible to that administrator.
+4. Add the Global Administrator who will enable Frontier and approve the first blueprint.
 5. Save and wait for Microsoft 365 to show the assignment as active.
+
+Do not assign this Copilot seat to each Hermes owner merely because they own an agent. An employee
+needs a Copilot license only if the organization separately wants that employee to use licensed
+Microsoft 365 Copilot features.
 
 If Microsoft 365 Copilot was selected, its purchase screen might require an eligible Microsoft 365
 base subscription. Purchase any missing prerequisite from the same
@@ -110,9 +111,10 @@ The agent-specific Frontier seat is separate from the human employee's Teams ent
 
 | Item | Who receives it | How it is obtained | Direct page |
 | --- | --- | --- | --- |
-| Agent 365, Microsoft 365 Copilot, or Microsoft 365 E7 | Human owner/manager | Buy only if the tenant has no qualifying product | [Purchase services](https://admin.cloud.microsoft/#/catalog) |
+| Microsoft 365 Copilot (`Microsoft_365_Copilot`) | Global Administrator performing initial enrollment | One seat is the tenant-level prerequisite proven by Nous; it is not assigned per Hermes instance | [Purchase services](https://admin.cloud.microsoft/#/catalog) |
 | Microsoft 365 Frontier for AI Teammates | One seat per Hermes instance | Microsoft adds 25 preview seats after Frontier enrollment; it is not bought separately | [Licenses](https://admin.cloud.microsoft/#/licenses) |
 | Microsoft Teams | Human employees using the Teams channel | Existing Microsoft 365 plan or separate Teams purchase | [Purchase services](https://admin.cloud.microsoft/#/catalog) |
+| Microsoft Agent 365 or Microsoft 365 E7 | Human users covered by the organization's GA governance licensing | Separate commercial/governance entitlement; not assigned to the Hermes Agent User and not relied on by this tested installation path | [Purchase services](https://admin.cloud.microsoft/#/catalog) |
 | Azure subscription | Tenant or Nous deployment account, not a person | Consumption-billed Azure subscription; this is not a Microsoft 365 license | [Azure subscriptions](https://portal.azure.com/#view/Microsoft_Azure_Billing/SubscriptionsBladeV2) |
 
 ## Step 2: enable Agent 365 Frontier and accept its terms
