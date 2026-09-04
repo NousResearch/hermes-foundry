@@ -1,486 +1,193 @@
-# Install Hermes Agent on Foundry in a Microsoft tenant
+# Install Hermes Agent on Foundry
 
-This runbook installs a new blueprint with the visible name **Hermes Agent on Foundry**. It is for
-a tenant administrator and an Azure deployment operator working together. It does not modify an
-existing Hermes agent.
+This is the primary installation guide for a Microsoft 365 tenant administrator. It assumes Nous
+has already prepared and published the **Hermes Agent on Foundry** blueprint for the target tenant,
+or has supplied a tenant-specific Agent 365 installation package. The administrator does not need
+to clone this repository, build a container, create certificates, or run Azure CLI commands.
 
-The procedure was checked against Microsoft's current Foundry Autopilot and Agent 365 documentation
-on September 4, 2026. Autopilots with their own Agent User are still a Frontier feature, so verify
-the linked Microsoft pages before a production purchase or rollout.
+> [!IMPORTANT]
+> A ZIP package is linked to an Entra Agent Identity Blueprint in a specific tenant. Do not upload a
+> package exported from another tenant. If Hermes is not already visible in the Microsoft 365 admin
+> center and Nous has not supplied a package prepared for this tenant, a deployment operator must
+> first follow [ADVANCED_TENANT_DEPLOYMENT.md](ADVANCED_TENANT_DEPLOYMENT.md).
 
-## What the installation creates
+## What the administrator does
 
-The installation has two independent halves:
+The tenant administrator:
 
-1. **Azure and Microsoft Foundry runtime**
-   - a Foundry account and project;
-   - one or more model deployments;
-   - an Azure Container Registry containing the Hermes image;
-   - a Foundry hosted agent with Activity and Responses endpoints; and
-   - an Entra Agent Identity Blueprint automatically created by Foundry.
-2. **Microsoft 365 publication**
-   - an Agent 365 package linked to the Foundry-created blueprint;
-   - a tenant-approved hiring scope and policy template; and
-   - one separately named Agent Identity and Agent User for every instance created from the
-     blueprint.
+1. verifies that Agent 365/Frontier is enabled and a license is available;
+2. reviews and activates the Hermes blueprint;
+3. chooses who is allowed to create Hermes instances;
+4. reviews the requested Microsoft Graph permissions and grants tenant consent;
+5. creates the first instance, or lets an allowed employee create it; and
+6. verifies that the new Hermes colleague appears in Teams and Microsoft 365.
 
-The blueprint is the reusable software definition. An instance is one employee's separately
-identifiable Hermes colleague. Each instance gets its own Microsoft 365 identity and, when licensed
-and provisioned by Microsoft, its own mailbox, OneDrive, Teams presence, and directory profile.
+Microsoft performs the managed instance provisioning. Each instance receives a separate Agent
+Identity and Agent User. When the required workload and license are available, Microsoft provisions
+the instance's Teams presence, mailbox, calendar, OneDrive, and directory profile.
 
 ## Before starting
 
-### Licensing and preview enrollment
+Have the following ready:
 
-For the own-identity Autopilot path used here, Microsoft currently requires all of the following:
+- a tenant administrator account with **Global Administrator** or **AI Administrator** access;
+- enrollment in [Microsoft 365 Frontier](https://learn.microsoft.com/en-us/microsoft-agent-365/frontier)
+  and acceptance of the Agent 365 terms;
+- an available Microsoft Agent 365 Frontier agent seat;
+- either a pending **Hermes Agent on Foundry** request in the Microsoft 365 admin center or a
+  tenant-specific ZIP supplied by Nous; and
+- a user or security group for the initial pilot.
 
-- enrollment in the [Microsoft 365 Frontier program](https://learn.microsoft.com/en-us/microsoft-agent-365/frontier);
-- acceptance of the Microsoft Agent 365 terms;
-- at least one Microsoft 365 Copilot license or Microsoft Agent 365 license, including Microsoft
-  365 E7; and
-- an available Microsoft Agent 365 Frontier license.
+Microsoft's current preview prerequisites and licensing can change. Check
+[Build your first Autopilot](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/agent-365)
+before a new rollout. The current Frontier allocation is intended for evaluation; large production
+licensing and automated cross-tenant distribution remain dependent on Microsoft's commercial and
+platform availability.
 
-Eligible enrolled tenants currently receive a 25-seat preview subscription. Each Autopilot instance
-consumes one of those seats because it creates an Agent User. This is a preview allocation, not a
-documented production purchasing path for hundreds or thousands of instances.
+## Step 1: find the Hermes blueprint
 
-The employee who creates or uses an instance also needs access to Microsoft Teams or Microsoft 365
-Copilot. Exchange, SharePoint, OneDrive, and other workloads must be enabled in the tenant if Hermes
-is expected to use them.
+1. Open the [Microsoft 365 admin center](https://admin.cloud.microsoft/).
+2. Open **Agents** > **All agents**.
+3. Look for **Hermes Agent on Foundry** under **Requests** with the status **Pending activate**.
 
-Microsoft reference: [Build your first Autopilot](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/agent-365).
+If it is present, select it and continue to Step 2.
 
-### People and roles
+If Nous supplied a tenant-specific package instead:
 
-Use separate administrators where the organization normally separates Azure and Microsoft 365
-duties.
+1. In **Agents** > **All agents**, select **Upload custom agent**.
+2. Upload `Hermes-Agent-on-Foundry.zip`.
+3. Wait for validation to finish and select the uploaded agent.
 
-| Operation | Minimum documented role or access |
+If neither option is available, stop here. The runtime and target-tenant blueprint have not yet been
+prepared; use the advanced deployment guide rather than trying to create identity objects manually.
+
+## Step 2: review and activate it
+
+Use the Microsoft publication wizard for **Hermes Agent on Foundry**.
+
+1. Confirm the agent name, publisher, description, icon, and declared capabilities.
+2. Enable the Microsoft 365 host products required by the organization, including Teams.
+3. Set **Hiring scope**:
+   - choose **Specific users or groups** for a controlled pilot;
+   - choose **All users** only when every employee should be allowed to create an instance; or
+   - choose **None** when instances will be created only by administrators.
+4. Apply the organization's Agent 365 policy template, if one is configured.
+5. Review the requested Microsoft Graph permissions.
+6. Grant tenant admin consent only for the approved permissions.
+7. Select **Publish** or **Activate** and wait until the agent is shown as **Available**.
+
+Hermes currently declares the permissions needed for its own mailbox, calendar, OneDrive, sharing,
+Teams chat, and directory lookup. The exact consent screen is authoritative. If its permissions do
+not match the approved deployment, do not activate it; return the package to the deployment operator.
+
+The approval above is for the reusable blueprint. Employees included in the hiring scope can then
+create instances without a separate per-instance approval. Restrict the hiring scope when the
+organization needs centralized approval or naming control.
+
+## Step 3: create the first Hermes instance
+
+There are two supported UI paths.
+
+### Administrator-created instance
+
+Use this path when IT must control the name, alias, owner, or rollout order.
+
+1. In the Microsoft 365 admin center, open the available Hermes blueprint.
+2. Select **Create instance**.
+3. Choose the employee who will own or manage the instance.
+4. Enter the approved display name, alias/domain, and manager fields offered by Microsoft.
+5. Confirm the available Agent 365 license and create the instance.
+
+### Employee-created instance
+
+Use this path when employees in the hiring scope may provision their own Hermes colleague.
+
+1. Open [Microsoft Teams](https://teams.microsoft.com/) or
+   [Microsoft 365 Copilot](https://m365.cloud.microsoft/).
+2. Open **Agents for your team** and select **Hermes Agent on Foundry**.
+3. Select **Create instance**.
+4. Enter the instance name and the other fields offered by Microsoft, then confirm creation.
+
+The current Microsoft employee flow allows the employee to choose the instance name. If strict
+naming or a separate per-instance approval is required, use the administrator-created path and set
+the hiring scope to **None** or a tightly controlled group. This repository does not replace
+Microsoft's managed Create Instance pipeline.
+
+## Step 4: wait for Microsoft provisioning
+
+Instance creation is asynchronous. Wait until Microsoft reports the instance as ready. Do not test
+mail or files while the identity or workloads are still provisioning.
+
+After completion, confirm that:
+
+- the instance has its own Agent Identity and Agent User;
+- the instance is visible as a distinct colleague in Teams and the directory;
+- the intended employee is its owner or manager;
+- its Agent 365 license is assigned; and
+- the user can open a chat with it.
+
+Mailbox and OneDrive readiness can lag behind identity creation. If those tools initially report
+that the resource cannot be found, wait for workload provisioning and retry before changing access.
+
+## Step 5: perform a short acceptance test
+
+From the owner's Teams chat, ask Hermes to perform read-only checks first:
+
+1. identify its own Microsoft 365 account;
+2. list up to three files from its own OneDrive; and
+3. list recent messages from its own mailbox.
+
+Then use a disposable test to verify approved write access:
+
+1. create a small text file in its own OneDrive and read it back;
+2. send a test email to the owner; and
+3. create, list, and delete a test routine if the advanced deployment enabled routine automation.
+
+The agent must report failures as failures. A successful chat response by itself does not prove that
+the requested Microsoft 365 operation completed.
+
+## Optional controls, without CLI
+
+| Control | Where the administrator configures it |
 | --- | --- |
-| Create Azure resources and role assignments | Azure `Owner`, or `Contributor` plus `Role Based Access Control Administrator`, at resource-group scope |
-| Build the image | `AcrPush` or `Container Registry Repository Writer` on the registry |
-| Create and publish the hosted-agent blueprint | `Foundry User` on the project |
-| Configure owned blueprint permissions | `Agent ID Developer` when the operator owns the blueprint, or `Agent ID Administrator` |
-| Upload the ZIP in Microsoft 365 admin center | `Global Administrator` according to the current Agent 365 manual-upload guide |
-| Approve and activate the blueprint | `Global Administrator` or `AI Administrator` |
-| Create an instance | Employee is included in the admin-selected hiring scope |
-
-The Foundry project's managed identity also needs:
-
-- `Container Registry Repository Reader` or `AcrPull` on the registry; and
-- `Foundry User` on the Foundry account for model access.
-
-Reference: [Hosted-agent permissions](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/hosted-agent-permissions).
-
-### Workstation tools
-
-Install Git, Azure CLI, .NET 9, Python 3, and OpenSSL. Docker is not required because `build.sh`
-uses Azure Container Registry cloud builds.
-
-```bash
-az version
-dotnet --version
-python3 --version
-openssl version
-git --version
-```
-
-Sign into the target tenant and subscription, then verify the selection before creating anything:
-
-```bash
-az login --tenant "<tenant-id>"
-az account set --subscription "<subscription-id>"
-az account show --query '{tenant:tenantId,subscription:id,name:name}' --output table
-```
-
-## Step 1: prepare the Azure resource group
-
-1. Open [Azure portal](https://portal.azure.com/).
-2. Select **Resource groups → Create**.
-3. Select the subscription, enter a resource-group name, and choose a region that supports Foundry
-   hosted agents and the required models.
-4. Open the new resource group and select **Access control (IAM)**.
-5. Give the deployment operator the temporary roles listed above. Remove excessive bootstrap roles
-   after the installation is complete.
-6. In **Subscriptions → Resource providers**, confirm that these providers are registered:
-   `Microsoft.CognitiveServices`, `Microsoft.ContainerRegistry`, `Microsoft.Insights`, and
-   `Microsoft.OperationalInsights`. Register `Microsoft.KeyVault` if routines will be enabled.
-
-## Step 2: create the Foundry account and project
-
-1. Open [Microsoft Foundry](https://ai.azure.com/) and switch to the target directory and
-   subscription.
-2. Select the project picker, then **Create new project**.
-3. Create a new Foundry resource or select the resource created for this Hermes deployment.
-4. Put the project in the resource group and region selected in step 1.
-5. Open **Manage → Resource details** and record the Foundry account name, project name, and project
-   endpoint in a private deployment worksheet.
-6. In the Azure portal, open the Foundry account's **Access control (IAM)** and grant its project
-   managed identity `Foundry User`.
-
-Do not put subscription IDs, tenant IDs, account names, or project endpoints in Git.
-
-## Step 3: deploy the models
-
-1. In Foundry, select **Build → Models**, or the current equivalent **Models + endpoints** view.
-2. Deploy at least one chat-capable model into this project.
-3. Record the **deployment name**, not only the catalog model name. Hermes calls deployment names.
-4. For a primary/fallback setup, create two deployments. For a minimal POC, the same compatible
-   deployment may be used as both primary and fallback.
-5. Open **Manage → Quota** and allocate sufficient TPM to each deployment. TPM is a rate limit, not
-   a monthly budget or a prepaid token purchase.
-
-Hermes performs multi-step turns and resends accumulated context after tool calls. A deployment
-that is adequate for a small chat prompt can still rate-limit a realistic research-and-document
-workflow. Start with a controlled pilot and adjust from measured usage.
-
-Reference: [Manage model quota](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/quota).
-
-## Step 4: create the container registry
-
-1. In the Azure portal, select **Create a resource → Container Registry**.
-2. Create a Basic registry in the Hermes resource group. Keep the admin user disabled.
-3. Under the registry's **Access control (IAM)**:
-   - give the deployment operator `AcrPush` or `Container Registry Repository Writer`;
-   - give the Foundry project managed identity `AcrPull` or `Container Registry Repository Reader`.
-4. Record the registry name without `.azurecr.io`.
-
-## Step 5: build the Hermes image
-
-```bash
-git clone https://github.com/NousResearch/hermes-foundry.git
-cd hermes-foundry
-
-export REG="<registry-name>"
-./build.sh v1
-```
-
-Azure builds the combined edge, gateway, Hermes runtime, and Microsoft 365 tool sidecar and stores
-the image in the tenant's registry. The script does not route or modify any agent.
-
-Verify the immutable image digest exists:
-
-```bash
-az acr repository show \
-  --name "$REG" \
-  --image "hermes-full-foundry:v1" \
-  --query '{digest:digest,created:createdTime}' \
-  --output table
-```
-
-## Step 6: create the new Foundry blueprint
-
-Use `hermes-agent-on-foundry` as the Azure technical name. The employee-facing name is set later to
-`Hermes Agent on Foundry`.
-
-```bash
-export ACCOUNT="<foundry-account-name>"
-export PROJECT="<foundry-project-name>"
-export AGENT="hermes-agent-on-foundry"
-export REG="<registry-name>"
-export TAG="v1"
-export PRIMARY_MODEL="<primary-model-deployment-name>"
-export FALLBACK_MODEL="<fallback-model-deployment-name>"
-
-./scripts/create-hosted-blueprint.sh --dry-run
-./scripts/create-hosted-blueprint.sh
-```
-
-The command fails rather than touching an agent with the same name. For the new agent only, it:
-
-1. resolves the image tag to an immutable digest;
-2. records the current compatible model inventory;
-3. creates an initial hosted-agent version so Foundry creates the Entra blueprint;
-4. creates a second version containing the new blueprint ID required by non-turn Agent OBO;
-5. exposes both Activity and Responses protocols;
-6. sets `BotServiceTenant` so tenant Microsoft 365 delivery can reach the endpoint; and
-7. routes only the new agent to the second version.
-
-It does **not** create an Agent User, grant admin consent, upload to Microsoft 365, or create Azure
-role assignments. Its tenant-specific record is written with mode `600` to the ignored path:
-
-```text
-deployment-output/hermes-agent-on-foundry/blueprint.json
-```
-
-## Step 7: declare the Microsoft Graph access Hermes needs
-
-The blueprint must contain both a reviewable required-resource declaration and an enumerated
-inheritance list. Neither is consent by itself. The tenant administrator grants consent later.
-
-Read the new blueprint ID from the local deployment record and run:
-
-```bash
-export BLUEPRINT_ID="$(python3 -c \
-  'import json; print(json.load(open("deployment-output/hermes-agent-on-foundry/blueprint.json"))["blueprintId"])')"
-
-./scripts/configure-blueprint-graph-permissions.sh --blueprint-id "$BLUEPRINT_ID"
-```
-
-The declared baseline is:
-
-- `Chat.ReadWrite`
-- `Mail.ReadWrite`
-- `Mail.Send`
-- `Calendars.ReadWrite`
-- `Files.ReadWrite.All`
-- `Sites.ReadWrite.All`
-- `User.Read.All`
-- `User.ReadBasic.All`
-
-These are delegated Agent User permissions. They allow an instance to work in its own mailbox and
-OneDrive and in resources that colleagues explicitly share with it. They do not silently give the
-Agent User every employee's files.
-
-If the organization removes a scope, the corresponding Hermes capability must be considered
-disabled and tested that way. For example, removing `Mail.Send` prevents outbound mail. Avoid
-granting broad first-party MCP permissions unless the tenant explicitly enables the non-production
-`ResponsesApi` diagnostic mode; normal Hermes uses the Graph-backed sidecar.
-
-Reference: [Inheritable blueprint permissions](https://learn.microsoft.com/en-us/entra/agent-id/configure-inheritable-permissions-blueprints).
-
-## Step 8: create the manual-upload package
-
-Prepare a 192×192 color PNG and a 32×32 transparent white-outline PNG. Then run:
-
-```bash
-python3 scripts/package-agent365-blueprint.py \
-  --blueprint-id "$BLUEPRINT_ID" \
-  --display-name "Hermes Agent on Foundry" \
-  --version 1.0.0 \
-  --color-icon "/private/path/color.png" \
-  --outline-icon "/private/path/outline.png"
-```
-
-The upload file is:
-
-```text
-deployment-output/hermes-agent-on-foundry/Hermes-Agent-on-Foundry.zip
-```
-
-The generator validates the blueprint ID, package version, 30-character Teams name limit, icon
-dimensions, and ZIP contents. The package contains the blueprint ID because Microsoft 365 must know
-which Foundry blueprint it represents. It contains no client secret, certificate, access token,
-tenant ID, subscription ID, resource name, or user address.
-
-This manual ZIP path is different from the Foundry-native publish API. The official Foundry sample
-calls `POST <project-endpoint>/agents/<agent-name>/microsoft365/publish` and creates a pending admin
-request automatically. The ZIP is used here because the installation video is intended to show the
-administrator uploading the package manually. Do not do both for the same package version.
-
-References:
-
-- [Agent 365 manual publishing](https://learn.microsoft.com/en-us/microsoft-agent-365/developer/publish)
-- [Foundry Autopilot publish API](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/agent-365#the-publish-api)
-
-## Step 9: connect the blueprint to the Foundry Activity endpoint
-
-Open this page while signed into the target tenant:
-
-```text
-https://dev.teams.microsoft.com/tools/agent-blueprint/<blueprint-id>/configuration
-```
-
-Set the agent type to **API Based** and set the notification URL to:
-
-```text
-https://<foundry-account>.services.ai.azure.com/api/projects/<project>/agents/hermes-agent-on-foundry/endpoint/protocols/activityProtocol?api-version=2025-05-15-preview
-```
-
-Save, reopen the page, and confirm the same value is still present. This is the route Teams and
-Microsoft 365 use for interactive and agentic Activity delivery. It is not a model endpoint and it
-must not point directly at the container's internal port.
-
-## Step 10: upload, review, and activate the blueprint
-
-1. Open [Microsoft 365 admin center](https://admin.cloud.microsoft/).
-2. Select **Agents → All agents → Upload custom agent**.
-3. Upload `Hermes-Agent-on-Foundry.zip`.
-4. Open the new `Hermes Agent on Foundry` request.
-5. Under **Publish to users**, select the host products and choose the hiring scope:
-   - **None** keeps creation disabled;
-   - **Specific users or groups** is the recommended pilot setting;
-   - **All users** lets any tenant user create an instance.
-6. Apply the organization's Agent 365 policy template.
-7. Review every requested Graph permission and select **Grant admin consent** only if the list
-   matches the approved Hermes capability set.
-8. Review the audience, hiring scope, available Autopilot licenses, and policy template, then
-   publish/activate.
-9. Confirm the blueprint appears on the Registry tab with status **Available**.
-
-Admin consent grants the approved scopes to the blueprint principal. Because step 7 configured
-enumerated inheritance, present and future child Agent Identities can receive those same scopes in
-their own Agent User tokens.
-
-## Step 11: create the first instance
-
-Use either of Microsoft's managed interfaces:
-
-- **Microsoft Teams → Apps → Agents for your team → Hermes Agent on Foundry → Create instance**; or
-- **Microsoft 365 Copilot → Agents → Agents for your team → Create instance**.
-
-The employee selects an instance name, alias/domain, and manager. Microsoft currently allows names
-up to 32 characters. Creation consumes one available Autopilot license and asynchronously creates
-the Agent Identity, Agent User, Microsoft 365 workloads, Teams chat, and org-chart entry.
-
-The current Microsoft experience does not expose a blueprint-specific naming regex or an external
-approval callback in this package. Until Microsoft exposes the managed Create Instance pipeline to
-tenant control planes, use a restricted hiring group or have administrators create instances in
-the Microsoft 365 admin center when naming must be centrally controlled.
-
-Allow several minutes for provisioning. A searchable identity does not prove that Exchange and
-OneDrive provisioning has completed.
-
-## Step 12: validate the installation
-
-Start a new Teams chat with the new instance and test in this order:
-
-1. Ask it to report its own Microsoft 365 identity.
-2. Ask it to list up to three messages in its own mailbox.
-3. Ask it to send a harmless message to its manager.
-4. Ask it to create a uniquely named text file in its own OneDrive, read it back, and share it with
-   its manager.
-5. Upload a small DOCX in Teams and ask for a summary.
-6. Ask it to list available models with `/model`.
-
-Check the actual tool result and received artifact. A natural-language success statement is not
-proof that Microsoft 365 completed an operation.
-
-## Optional model controls
-
-There are four different controls. They solve different problems.
-
-### Restrict what models may be deployed
-
-In [Azure portal](https://portal.azure.com/), open **Policy → Authoring → Definitions**, search for
-**Foundry model deployments should only use approved models**, select **Assign**, and scope it to the
-Hermes resource group, subscription, or management group. Set the effect to `Deny` and supply the
-approved publishers and model asset IDs.
-
-This generally available Azure Policy blocks new non-approved deployments. It does not hide catalog
-cards and it is not the runtime model selector. Asset IDs are prefix-matched; use the exact IDs and
-trailing slashes described in Microsoft's guide.
-
-The separate **Foundry model deployments should meet eligibility requirements** policy can exclude
-preview or non-Azure-direct models.
-
-Reference: [Built-in Foundry model policies](https://learn.microsoft.com/en-us/azure/foundry/how-to/model-deployment-policy).
-
-### Restrict what this Hermes blueprint exposes
-
-Before creating the blueprint, set an explicit deployment-name allowlist:
-
-```bash
-export MODEL_ALLOWED_DEPLOYMENTS="approved-primary,approved-fast"
-```
-
-Hermes will expose only compatible project deployments in this list through `/model`. Azure RBAC,
-Azure Policy, and the existence of the deployment remain the authoritative security boundary. The
-Hermes allowlist is a blueprint runtime policy, not a substitute for Azure enforcement.
-
-### Choose automatic priority
-
-Set the order Hermes should try when the employee has not chosen a model:
-
-```bash
-export MODEL_PRIORITY="approved-primary,approved-fast"
-```
-
-At runtime:
-
-- `/model` shows the permitted deployments;
-- `/model <deployment-name>` selects one for that caller;
-- `/model auto` returns to administrator priority; and
-- `/model refresh` refreshes the current project inventory.
-
-The employee cannot use `/model` to deploy a new model, expand the allowlist, or bypass Azure
-policy.
-
-### Limit throughput and monitor spend
-
-- In Foundry, use **Manage → Quota** or edit the model deployment to set TPM/RPM capacity.
-- In Foundry, use **Operate → Overview** for project estimates and each agent/model's **Monitor**
-  tab for usage.
-- In Azure portal, open the Hermes resource group or subscription and select **Cost Management →
-  Cost analysis** for billed meters.
-- Create a monthly budget under **Cost Management → Budgets** and configure actual and forecast
-  alerts.
-
-An Azure budget is an alert, not a hard spending cap; it does not stop the resources. Automated
-shutdown or policy action after an alert requires separate tenant automation. TPM is a traffic
-limit, not a monthly currency limit.
-
-Reference: [Plan and manage Foundry costs](https://learn.microsoft.com/en-us/azure/foundry/concepts/manage-costs).
-
-## Other optional tenant configuration
-
-### Hiring and Microsoft 365 governance
-
-- Limit hiring to a pilot security group in **Microsoft 365 admin center → Agents → All agents**.
-- Create or select policy templates under **Agents → Settings → Templates**.
-- Review the blueprint and linked Agent Identities in
-  [Microsoft Entra admin center](https://entra.microsoft.com/) under **Entra ID → Agents**.
-- Apply supported Conditional Access, Defender, Purview, SharePoint, retention, and DLP controls
-  according to the organization's license and Agent 365 policy support.
-- Give documents, sites, groups, and projects to an Agent User the same way access is granted to a
-  human colleague. Graph consent allows an operation type; resource ACLs decide which resources the
-  instance can actually reach.
-
-### Hosted session cost and latency
-
-`create-hosted-blueprint.sh` defaults to a five-minute idle timeout, the minimum currently
-documented by Foundry. Set `IDLE_TIMEOUT_SECONDS` from 300 through 3,600 before creation. A shorter
-timeout reduces idle compute but increases cold resumes. Foundry preserves the session filesystem
-when it suspends the sandbox.
-
-### Scheduled routines
-
-Routines need additional non-turn identity configuration. Complete
-[ROUTINE_RBAC_AUTOMATION.md](ROUTINE_RBAC_AUTOMATION.md) after the base agent works:
-
-1. register an X.509 public certificate on this blueprint;
-2. keep its private certificate in the tenant's Azure Key Vault;
-3. allow the hosted runtime to read that certificate;
-4. create a new agent version with `RoutineCredentialVaultUri` and
-   `RoutineCredentialCertificateName`; and
-5. install the included blueprint-scoped RBAC reconciler once so each new child Agent Identity gets
-   only `Foundry User` on this project.
-
-Do not grant per-instance Azure roles manually during testing. It hides a broken provisioning path
-and produces instances whose behavior depends on undocumented operator actions.
-
-### Observability
-
-- Foundry: **Build → Agents → Hermes Agent on Foundry → Monitor**.
-- Azure portal: the Foundry resource, Application Insights, and Log Analytics views created or
-  connected for the project.
-- Microsoft Entra: blueprint/Agent Identity sign-in and audit logs.
-- Microsoft 365 admin center: Agent 365 inventory, policy, and lifecycle views.
-
-Keep content logging and long retention disabled unless the organization's privacy policy explicitly
-allows them. Do not put Graph tokens, attachment URLs, or document contents into custom telemetry.
-
-## Updating the runtime later
-
-Do not upload another Microsoft 365 package merely to change Hermes code. Build a new immutable
-image and use `new-version.sh` to create a new hosted-agent version, validate it, then explicitly
-route traffic. Repackage only when Microsoft 365-visible metadata or package version changes.
-
-## Installation checklist
-
-- [ ] Frontier enrollment, terms, and an available Autopilot license confirmed
-- [ ] Foundry account/project and supported region selected
-- [ ] Model deployments created and usable quota allocated
-- [ ] Registry created; operator and project identity have only required roles
-- [ ] Hermes image built and digest verified
-- [ ] New technical agent `hermes-agent-on-foundry` created
-- [ ] New blueprint ID recorded only under `deployment-output/`
-- [ ] Graph declaration and enumerated inheritance verified
-- [ ] ZIP generated with the visible name `Hermes Agent on Foundry`
-- [ ] Teams Developer Portal notification URL verified
-- [ ] Package uploaded, permissions reviewed, and admin consent granted
-- [ ] Hiring scope limited to the intended pilot group
-- [ ] First instance and Microsoft 365 workloads finished provisioning
-- [ ] Identity, mail, files, sharing, attachments, and model selection smoke-tested
-- [ ] Optional routine automation configured and tested, if required
-- [ ] Azure budget alerts and operational monitoring configured
+| Who may create an instance | Microsoft 365 admin center > Agents > Hermes > hiring scope |
+| Agent policy and allowed capabilities | Microsoft 365 admin center > Agents > policy templates |
+| Blueprint activation, disable, or removal | Microsoft 365 admin center > Agents > All agents |
+| Agent identities and Conditional Access | [Microsoft Entra admin center](https://entra.microsoft.com/) |
+| Licenses and available seats | Microsoft 365 admin center > Billing > Licenses |
+| Instance owner, manager, and lifecycle | Microsoft 365 admin center > Agents and Entra admin center |
+| Models deployed in a tenant-owned Foundry project | [Microsoft Foundry](https://ai.azure.com/) |
+| Azure model policy, quota, cost alerts, and logs | [Azure portal](https://portal.azure.com/) |
+
+Model, quota, budget, and runtime controls are available to the tenant administrator only when the
+Hermes runtime is deployed in that tenant's Azure subscription. Azure budgets provide alerts and
+automation hooks; they are not a universal hard per-agent spending cap. The current Hermes runtime
+also exposes an approved model list and priority order, documented in the repository README.
+
+Routine authorization requires one tenant-level automation deployment because every new Agent
+Identity needs an Azure role on the Foundry project. It is intentionally kept out of this no-CLI
+guide. The deployment operator installs it once by following the routine section in
+[ADVANCED_TENANT_DEPLOYMENT.md](ADVANCED_TENANT_DEPLOYMENT.md); tenant admins should not assign
+roles manually to individual agents.
+
+## Responsibility boundary
+
+| Party | Responsibility |
+| --- | --- |
+| Tenant administrator | Enables licensing, activates Hermes, grants consent, selects the hiring scope and policies, and manages instances |
+| Microsoft Foundry and Agent 365 | Runs the hosted agent and performs the managed Agent Identity, Agent User, Teams, license, and Microsoft 365 workload provisioning |
+| Hermes runtime | Provides the agent behavior, tools, model selection, memory, file handling, and routine logic within the permissions granted to that instance |
+| Nous/deployment operator | Prepares the target-tenant runtime and blueprint, publishes the package, and installs advanced Azure-side automation and observability |
+
+## Current packaging boundary
+
+The intended enterprise experience is a Microsoft-distributed Hermes offer that deploys the runtime
+and publishes a tenant-ready blueprint before the administrator reaches this guide. The present POC
+does not yet provide one portable ZIP that creates the Azure runtime, Entra blueprint, Microsoft 365
+publication, and instance workloads in any tenant. Today, Nous or the customer's deployment operator
+must perform that one-time preparation in each target tenant. After it is prepared, the approval and
+instance-provisioning steps above are portal-only and require no CLI work.
+
+For that one-time technical preparation, use
+[ADVANCED_TENANT_DEPLOYMENT.md](ADVANCED_TENANT_DEPLOYMENT.md). For updating an already deployed
+runtime, use [DEPLOYMENT.md](DEPLOYMENT.md).

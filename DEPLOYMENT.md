@@ -5,11 +5,11 @@ It is written for an administrator who is new to Azure, Microsoft Foundry, Micro
 Microsoft 365.
 
 > [!IMPORTANT]
-> This is the lower-level operator and troubleshooting reference. For the current end-to-end
-> administrator journey, including creation of a fresh hosted-agent blueprint and a manual-upload
-> Agent 365 ZIP, start with [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md). Azure
-> resource creation is still an administrator-led portal procedure rather than a one-command IaC
-> deployment.
+> This is the lower-level update and troubleshooting reference. A Microsoft 365 administrator
+> installing a prepared blueprint should start with the no-CLI
+> [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md). An Azure operator creating the
+> runtime, a fresh hosted-agent blueprint, and its Agent 365 package should start with
+> [ADVANCED_TENANT_DEPLOYMENT.md](ADVANCED_TENANT_DEPLOYMENT.md).
 
 The procedure records what worked, including the quota, role, permission-inheritance, identity,
 and hosted-container problems encountered during the original deployment. Microsoft changes these

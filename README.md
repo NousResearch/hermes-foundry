@@ -12,16 +12,15 @@ its own mailbox, calendar, OneDrive, and other Microsoft 365 services.
 
 ## Read this first
 
-There are two very different deployment tasks:
+There are three different deployment tasks:
 
-1. **First installation into a Microsoft organization.** An administrator must create and connect
-   Microsoft 365, Agent 365, Entra identity, Azure, Foundry, models, permissions, and an initial
-   hosted-agent version. Start with
-   [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md). It includes the current manual
-   portal flow, the safe new-blueprint command, the Agent 365 upload package, approval, model
-   controls, and validation. [DEPLOYMENT.md](DEPLOYMENT.md) remains the lower-level operator and
-   troubleshooting reference.
-2. **Building or updating Hermes after that installation exists.** This repository can build the
+1. **Installing a prepared Hermes blueprint.** A Microsoft 365 tenant administrator uses the
+   portal-only [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md). It covers licensing,
+   blueprint approval, consent, hiring scope, instance creation, and validation. It requires no CLI.
+2. **Preparing Hermes in a new tenant.** An Azure deployment operator creates the runtime, models,
+   blueprint, permissions, package, and supporting automation by following
+   [ADVANCED_TENANT_DEPLOYMENT.md](ADVANCED_TENANT_DEPLOYMENT.md).
+3. **Building or updating Hermes after that installation exists.** This repository can build the
    complete container and safely create a new version of an existing hosted agent. That is the
    shorter workflow documented below.
 
@@ -115,15 +114,19 @@ Generated publish directories (`edge/`, `gateway/`, and `sidecar/`) are ignored 
 
 ### I am deploying to a new organization
 
-Follow [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md) from the beginning. It covers:
+If Nous or a deployment operator has already published a tenant-ready **Hermes Agent on Foundry**
+blueprint, follow the no-CLI [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md). It covers:
 
 - Microsoft 365 and Agent 365 licensing;
-- the Azure subscription and administrator roles;
-- Foundry, model, registry, bot, logging, and hosted-agent resources;
-- the agent identity blueprint, Graph consent, and inheritable permissions;
-- creating the Agent User and waiting for mailbox/OneDrive provisioning;
-- building this image, creating a version, and testing mail and files; and
-- optional model, cost, hiring, session, observability, and routine controls.
+- blueprint review, consent, policies, and hiring scope;
+- administrator-created and employee-created instances;
+- waiting for Microsoft 365 workload provisioning; and
+- testing Teams, mail, files, and routines.
+
+If the runtime and blueprint do not yet exist in the target tenant, use
+[ADVANCED_TENANT_DEPLOYMENT.md](ADVANCED_TENANT_DEPLOYMENT.md). It covers the Azure subscription,
+Foundry resources, models, registry, hosted agent, identity blueprint, package, permissions, and
+routine-role automation.
 
 The current repository is not a one-command Azure infrastructure installer. However,
 `scripts/create-hosted-blueprint.sh` creates a first hosted agent safely after the Foundry project,
