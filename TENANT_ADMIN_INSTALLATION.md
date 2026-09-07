@@ -70,7 +70,7 @@ Frontier Autopilot flow.
    and complete checkout.
 6. If **Buy** is unavailable because the tenant purchases through an Enterprise Agreement or Cloud
    Solution Provider, use the organization's Microsoft reseller or the **Contact Sales** action on
-   the [Agent 365 plans page](https://www.microsoft.com/en-us/microsoft-agent-365#plans-and-pricing).
+   the [Microsoft 365 Copilot enterprise pricing page](https://www.microsoft.com/microsoft-365/copilot/pricing/enterprise).
 
 Standalone Agent 365 and Microsoft 365 E7 have their own per-human commercial licensing rules for
 Agent 365 governance. Those rules are separate from the technical creation of the Hermes Agent User.
@@ -115,12 +115,18 @@ The agent-specific Frontier seat is separate from the human employee's Teams ent
 | Microsoft 365 Frontier for AI Teammates | One seat per Hermes instance | Microsoft adds 25 preview seats after Frontier enrollment; it is not bought separately | [Licenses](https://admin.cloud.microsoft/#/licenses) |
 | Microsoft Teams | Human employees using the Teams channel | Existing Microsoft 365 plan or separate Teams purchase | [Purchase services](https://admin.cloud.microsoft/#/catalog) |
 | Microsoft Agent 365 or Microsoft 365 E7 | Human users covered by the organization's GA governance licensing | Separate commercial/governance entitlement; not assigned to the Hermes Agent User and not relied on by this tested installation path | [Purchase services](https://admin.cloud.microsoft/#/catalog) |
-| Azure subscription | Tenant or Nous deployment account, not a person | Consumption-billed Azure subscription; this is not a Microsoft 365 license | [Azure subscriptions](https://portal.azure.com/#view/Microsoft_Azure_Billing/SubscriptionsBladeV2) |
+| Azure subscription | Customer tenant, operated by the customer or an authorized deployment operator | Consumption-billed Azure subscription; this is not a Microsoft 365 license | [Azure subscriptions](https://portal.azure.com/#view/Microsoft_Azure_Billing/SubscriptionsBladeV2) |
 
-## Step 2: enable Agent 365 Frontier and accept its terms
+## Step 2: enroll in the own-identity Frontier preview
 
-This consent enables the tenant-level preview in which Autopilot instances receive their own Agent
-Identity, Agent User, and Microsoft 365 workload provisioning.
+**Microsoft Frontier** is the broader preview program. It is not an Azure service or a component of
+Microsoft 365 Copilot. Microsoft currently exposes one of its user-audience controls under
+**Copilot > Settings > Copilot Frontier**, while the separate Agent 365 enrollment and terms live
+under **Agents > Overview**.
+
+Accepting the Agent 365 Frontier terms enrolls the tenant in the preview and makes the preview agent
+licenses available. The later managed **Create instance** operation is what creates an Agent
+Identity, Agent User, and Microsoft 365 workloads.
 
 1. Sign in as **Global Administrator**.
 2. Open [Agent 365 Overview](https://admin.cloud.microsoft/#/agents/overview).
@@ -135,10 +141,15 @@ automatically each time the managed **Create instance** flow creates a Hermes Ag
 product does not appear, confirm that Step 1 is complete, sign out and back in, and then return to
 [Agent 365 Overview](https://admin.cloud.microsoft/#/agents/overview).
 
-If pilot users need access to other Frontier features, open
+To let a pilot employee discover and use newly published Frontier agents, open
 [Copilot Frontier settings](https://admin.cloud.microsoft/#/copilot/settings/ViewAll/:/CopilotSettings/Frontier)
-and select **Specific users**, then add the pilot group. This audience setting is separate from the
-Hermes blueprint's hiring scope.
+and select **Specific users**, then add the pilot group. This is a Frontier audience setting; it
+does not create Agent Users or provision the 25 seats. It is also separate from the Hermes
+blueprint's hiring scope, which controls who may create Hermes instances after activation.
+
+Frontier is a preview with no specific SLA. Microsoft states that preview support can change or be
+removed, so this installation remains a POC until the own-identity Autopilot path has a suitable GA
+licensing and support model.
 
 ## Step 3: confirm the Azure subscription used by Hermes
 
@@ -146,11 +157,12 @@ This is not a license or an OAuth consent. Foundry hosting, models, registry, lo
 are charged to an Azure subscription.
 
 1. Open [Azure subscriptions](https://portal.azure.com/#view/Microsoft_Azure_Billing/SubscriptionsBladeV2).
-2. Confirm that the subscription selected for Hermes is **Active** and belongs to the same Entra
-   tenant.
-3. If Nous operates the prepared runtime, record the Nous-provided subscription arrangement and do
-   not create a second subscription.
-4. If the customer operates the runtime and no subscription exists, select **Add** on that page or
+2. Confirm that the subscription selected for Hermes is **Active** and belongs to the customer's
+   Entra tenant.
+3. If Nous operates the prepared runtime, Nous operates resources in that customer-authorized
+   subscription; this guide does not assume that an unrelated Nous-tenant subscription can host the
+   customer's tenant-local blueprint.
+4. If no suitable customer subscription exists, select **Add** on that page or
    use the organization's Microsoft account team/CSP to create one.
 
 The no-CLI installation can continue only after Nous or the deployment operator has published a
@@ -182,7 +194,10 @@ Use the Microsoft publication wizard for **Hermes Agent on Foundry**.
 3. Set **Hiring scope**:
    - choose **Specific users or groups** for a controlled pilot;
    - choose **All users** only when every employee should be allowed to create an instance; or
-   - choose **None** when instances will be created only by administrators.
+   - choose **None** to disable employee self-service. Because the administrator-side Create
+     Instance UI is still a preview surface and is not covered by Microsoft's current public
+     step-by-step guide, verify that the tenant exposes the required IT-led creation path before
+     making this the rollout policy.
 4. Apply the organization's Agent 365 policy template, if one is configured.
 5. On **Accept permissions**, review the requested Microsoft Graph permissions listed below.
 6. Select **Grant admin consent**. Sign in again as the Global Administrator if Microsoft prompts.
@@ -239,7 +254,9 @@ in this own-identity design.
 
 ## Step 6: create the first Hermes instance
 
-There are two supported UI paths.
+There are two UI paths in the current preview. Microsoft's public Foundry quickstart documents the
+employee path. The administrator path below exists in the Microsoft 365 admin center we tested, but
+its exact fields and behavior are not yet documented as a stable public contract.
 
 ### Administrator-created instance
 
@@ -306,10 +323,10 @@ the requested Microsoft 365 operation completed.
 | Control | Where the administrator configures it |
 | --- | --- |
 | Who may create an instance | [Agents > All agents](https://admin.cloud.microsoft/#/agents/all) > Hermes > hiring scope |
-| Agent policy and allowed capabilities | [Agents > All agents](https://admin.cloud.microsoft/#/agents/all) > Hermes > policy template |
+| Agent policy template | [Agents > All agents](https://admin.cloud.microsoft/#/agents/all) > Hermes > policy template; custom templates and advanced controls depend on the tenant's Agent 365/E7 licensing |
 | Blueprint activation, disable, or removal | [Agents > All agents](https://admin.cloud.microsoft/#/agents/all) |
 | Agent identities | [Entra Agent identities](https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/AllAgents.MenuView/~/allAgentIds) |
-| Conditional Access policies | [Entra Conditional Access](https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies/menuId//fromNav/Identity) |
+| Conditional Access policies | [Entra Conditional Access](https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies/menuId//fromNav/Identity); agent Conditional Access requires the applicable Entra ID and Agent 365 licensing |
 | Licenses and available seats | [Billing > Licenses](https://admin.cloud.microsoft/#/licenses) |
 | Instance owner, manager, and lifecycle | [Agents > All agents](https://admin.cloud.microsoft/#/agents/all) and [Entra Agent identities](https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/AllAgents.MenuView/~/allAgentIds) |
 | Models deployed in a tenant-owned Foundry project | [Microsoft Foundry](https://ai.azure.com/) |
@@ -333,7 +350,8 @@ roles manually to individual agents.
 | Party | Responsibility |
 | --- | --- |
 | Tenant administrator | Enables licensing, activates Hermes, grants consent, selects the hiring scope and policies, and manages instances |
-| Microsoft Foundry and Agent 365 | Runs the hosted agent and performs the managed Agent Identity, Agent User, Teams, license, and Microsoft 365 workload provisioning |
+| Microsoft Foundry | Runs the hosted Hermes container, model endpoints, agent endpoint, sessions, and scale-to-zero infrastructure |
+| Microsoft Agent 365 and Microsoft 365 | Handles publication governance and the managed Agent Identity, Agent User, license, Teams, and Microsoft 365 workload provisioning |
 | Hermes runtime | Provides the agent behavior, tools, model selection, memory, file handling, and routine logic within the permissions granted to that instance |
 | Nous/deployment operator | Prepares the target-tenant runtime and blueprint, publishes the package, and installs advanced Azure-side automation and observability |
 

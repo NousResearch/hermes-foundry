@@ -248,7 +248,36 @@ granting broad first-party MCP permissions unless the tenant explicitly enables 
 
 Reference: [Inheritable blueprint permissions](https://learn.microsoft.com/en-us/entra/agent-id/configure-inheritable-permissions-blueprints).
 
-## Step 8: create the manual-upload package
+## Step 8: submit the blueprint for tenant-administrator review
+
+Publishing the hosted agent is the final developer operation. It submits a pending Microsoft 365
+request; it does not activate the blueprint or perform any tenant-administrator action.
+
+```bash
+export ACCOUNT="<foundry-account-name>"
+export PROJECT="<foundry-project-name>"
+export AGENT="hermes-agent-on-foundry"
+
+./scripts/publish-autopilot-blueprint.sh --dry-run
+./scripts/publish-autopilot-blueprint.sh
+```
+
+The script uses Foundry's native tenant-scoped Autopilot publication API. It verifies that the
+hosted agent exposes the Activity protocol with `BotServiceTenant`, publishes the visible name
+**Hermes Agent on Foundry**, links the Foundry-created Entra Agent Identity Blueprint, and leaves the
+request pending for an administrator. It does not accept preview terms, grant Graph consent, select
+a hiring scope, activate the blueprint, create an Agent User, consume an Autopilot seat, or create
+Azure role assignments.
+
+Reference: [Foundry Autopilot publish API](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/agent-365#the-publish-api).
+
+Stop here when separating developer preparation from tenant onboarding. The tenant administrator
+continues with [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md).
+
+### Manual-package fallback
+
+Use a ZIP only when the Foundry-native publication request cannot be used or the onboarding test is
+specifically intended to exercise manual package upload.
 
 Prepare a 192×192 color PNG and a 32×32 transparent white-outline PNG. Then run:
 
@@ -272,56 +301,34 @@ dimensions, and ZIP contents. The package contains the blueprint ID because Micr
 which Foundry blueprint it represents. It contains no client secret, certificate, access token,
 tenant ID, subscription ID, resource name, or user address.
 
-This manual ZIP path is different from the Foundry-native publish API. The official Foundry sample
-calls `POST <project-endpoint>/agents/<agent-name>/microsoft365/publish` and creates a pending admin
-request automatically. The ZIP is used here because the installation video is intended to show the
-administrator uploading the package manually. Do not do both for the same package version.
+Do not submit the native publication request and upload the ZIP for the same blueprint version.
 
 References:
 
-- [Agent 365 manual publishing](https://learn.microsoft.com/en-us/microsoft-agent-365/developer/publish)
+- [Agent 365 manual publishing](https://learn.microsoft.com/en-us/microsoft-agent-365/developer/publish-deploy-agent)
 - [Foundry Autopilot publish API](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/agent-365#the-publish-api)
 
-## Step 9: connect the blueprint to the Foundry Activity endpoint
-
-Open this page while signed into the target tenant:
-
-```text
-https://dev.teams.microsoft.com/tools/agent-blueprint/<blueprint-id>/configuration
-```
-
-Set the agent type to **API Based** and set the notification URL to:
-
-```text
-https://<foundry-account>.services.ai.azure.com/api/projects/<project>/agents/hermes-agent-on-foundry/endpoint/protocols/activityProtocol?api-version=2025-05-15-preview
-```
-
-Save, reopen the page, and confirm the same value is still present. This is the route Teams and
-Microsoft 365 use for interactive and agentic Activity delivery. It is not a model endpoint and it
-must not point directly at the container's internal port.
-
-## Step 10: upload, review, and activate the blueprint
+## Step 9: tenant administrator reviews and activates the blueprint
 
 1. Open [Agents > All agents](https://admin.cloud.microsoft/#/agents/all).
-2. Select **Upload custom agent**.
-3. Upload `Hermes-Agent-on-Foundry.zip`.
-4. Open the new `Hermes Agent on Foundry` request.
-5. Under **Publish to users**, select the host products and choose the hiring scope:
+2. Open the pending `Hermes Agent on Foundry` request. If the developer intentionally used the
+   manual-package fallback, select **Upload custom agent** and upload the ZIP first.
+3. Under **Publish to users**, select the host products and choose the hiring scope:
    - **None** keeps creation disabled;
    - **Specific users or groups** is the recommended pilot setting;
    - **All users** lets any tenant user create an instance.
-6. Apply the organization's Agent 365 policy template.
-7. Review every requested Graph permission and select **Grant admin consent** only if the list
+4. Apply the organization's Agent 365 policy template.
+5. Review every requested Graph permission and select **Grant admin consent** only if the list
    matches the approved Hermes capability set.
-8. Review the audience, hiring scope, available Autopilot licenses, and policy template, then
+6. Review the audience, hiring scope, available Autopilot licenses, and policy template, then
    publish/activate.
-9. Confirm the blueprint appears on the Registry tab with status **Available**.
+7. Confirm the blueprint appears on the Registry tab with status **Available**.
 
 Admin consent grants the approved scopes to the blueprint principal. Because step 7 configured
 enumerated inheritance, present and future child Agent Identities can receive those same scopes in
 their own Agent User tokens.
 
-## Step 11: create the first instance
+## Step 10: create the first instance
 
 Use either of Microsoft's managed interfaces:
 
@@ -340,7 +347,7 @@ the Microsoft 365 admin center when naming must be centrally controlled.
 Allow several minutes for provisioning. A searchable identity does not prove that Exchange and
 OneDrive provisioning has completed.
 
-## Step 12: validate the installation
+## Step 11: validate the installation
 
 Start a new Teams chat with the new instance and test in this order:
 
@@ -485,8 +492,8 @@ route traffic. Repackage only when Microsoft 365-visible metadata or package ver
 - [ ] New technical agent `hermes-agent-on-foundry` created
 - [ ] New blueprint ID recorded only under `deployment-output/`
 - [ ] Graph declaration and enumerated inheritance verified
-- [ ] ZIP generated with the visible name `Hermes Agent on Foundry`
-- [ ] Teams Developer Portal notification URL verified
+- [ ] Native Foundry publication request submitted with the visible name `Hermes Agent on Foundry`,
+      or manual ZIP generated as an explicit fallback
 - [ ] Package uploaded, permissions reviewed, and admin consent granted
 - [ ] Hiring scope limited to the intended pilot group
 - [ ] First instance and Microsoft 365 workloads finished provisioning

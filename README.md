@@ -98,7 +98,7 @@ src/sidecar/    Microsoft 365 and utility MCP tools
 src/hermes-patches/ build-time compatibility overlays for the pinned Hermes image
 tests/          sidecar unit tests
 infra/          tenant-admin Azure automation templates
-scripts/        installation and removal commands for that automation
+scripts/        hosted-agent creation/publication and tenant-automation commands
 deployment/     tenant-neutral Microsoft 365 package templates
 Dockerfile      combined hosted-agent image
 start.sh        process startup and supervision
@@ -130,8 +130,10 @@ routine-role automation.
 
 The current repository is not a one-command Azure infrastructure installer. However,
 `scripts/create-hosted-blueprint.sh` creates a first hosted agent safely after the Foundry project,
-models, registry, and image exist. `new-version.sh` remains the update command for an existing
-serving agent.
+models, registry, and image exist. `scripts/configure-blueprint-graph-permissions.sh` declares the
+reviewable Graph scope set without granting consent, and `scripts/publish-autopilot-blueprint.sh`
+submits the prepared blueprint for tenant-administrator review. `new-version.sh` remains the update
+command for an existing serving agent.
 
 ### I already have a provisioned Hermes Foundry stack
 
