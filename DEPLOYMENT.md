@@ -188,19 +188,20 @@ Use a local macOS, Linux, or Windows workstation. Install:
 - Git
 - [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli), version 2.80 or later
 - [Azure Developer CLI (`azd`)](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/install-azd)
-- [.NET 9 SDK](https://dotnet.microsoft.com/en-us/download/dotnet/9.0)
 - Python 3
-- PowerShell 7 for the current provisioning hooks
-- Docker only if building locally; this repository normally uses an ACR cloud build
+- OpenSSL
+
+`setup.sh` installs the Azure CLIs, Python 3, and OpenSSL when they are missing. Docker, PowerShell,
+and .NET are not required locally because the current Dockerfile compiles the edge during the ACR
+cloud build.
 
 Verify them:
 
 ```bash
 az version
 azd version
-dotnet --version
 python3 --version
-pwsh --version
+openssl version
 git --version
 ```
 
@@ -306,8 +307,9 @@ export REG="<acr-name-without-azurecr-io>"
 ./build.sh v1
 ```
 
-`build.sh` publishes the .NET edge, stages the gateway and sidecar, and submits an ACR cloud build.
-The image tag is later resolved to an immutable digest.
+`build.sh` submits an ACR cloud build. The Dockerfile compiles the .NET edge in a build stage and
+copies the committed gateway and sidecar directly from `src/`. The image tag is later resolved to
+an immutable digest.
 
 Verify the image exists:
 

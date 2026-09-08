@@ -3,6 +3,22 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROVISION_MODE="apply"
+
+case "${1:-}" in
+  "") ;;
+  --preview) PROVISION_MODE="preview" ;;
+  --auth-only) PROVISION_MODE="auth-only" ;;
+  -h|--help)
+    printf '%s\n' \
+      "Usage: ./setup.sh [--preview|--auth-only]" \
+      "  no option    Authenticate, provision Azure, build Hermes, and submit the private request." \
+      "  --preview    Show the Azure resource plan without creating anything." \
+      "  --auth-only  Install tools and authenticate without running azd provisioning."
+    exit 0
+    ;;
+  *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
+esac
 
 info() {
   printf '\n%s\n' "$*"
@@ -102,6 +118,32 @@ install_azd() {
   have azd || fail "Azure Developer CLI installation did not make 'azd' available in PATH. Open a new terminal and rerun this script."
 }
 
+install_support_tools() {
+  if have python3 && have openssl; then
+    return
+  fi
+
+  info "Installing the local tools required to create the hosted-agent configuration."
+  case "$(uname -s)" in
+    Darwin)
+      install_homebrew
+      have python3 || brew install python
+      have openssl || brew install openssl
+      ;;
+    Linux)
+      if have apt-get; then
+        sudo apt-get update
+        sudo apt-get install -y python3 openssl
+      else
+        fail "Install Python 3 and OpenSSL, then rerun this script."
+      fi
+      ;;
+  esac
+
+  have python3 || fail "Python 3 is required but was not installed successfully."
+  have openssl || fail "OpenSSL is required but was not installed successfully."
+}
+
 login_with_azure_cli() {
   info "Microsoft sign-in is required."
   printf '%s\n' \
@@ -193,6 +235,48 @@ ensure_azure_login() {
     --output none >/dev/null 2>&1 || fail "Azure CLI login did not produce a usable token for this tenant."
 }
 
+select_customer_subscription() {
+  local rows=()
+  local row subscription_id subscription_name choice choice_number i
+
+  while IFS= read -r row; do
+    [[ -n "$row" ]] && rows+=("$row")
+  done < <(az account list --all \
+    --query "[?tenantId=='${CUSTOMER_TENANT_ID}' && state=='Enabled'].join('|', [id, name])" \
+    --output tsv)
+
+  ((${#rows[@]} > 0)) || fail "The selected identity has no enabled Azure subscription in this tenant."
+
+  if ((${#rows[@]} == 1)); then
+    row="${rows[0]}"
+  else
+    info "Choose the Azure subscription for Hermes:"
+    i=1
+    for row in "${rows[@]}"; do
+      subscription_id="${row%%|*}"
+      subscription_name="${row#*|}"
+      printf '  %d) %s — %s\n' "$i" "$subscription_name" "$subscription_id"
+      i=$((i + 1))
+    done
+
+    while true; do
+      read -r -p "Selection: " choice
+      if [[ "$choice" =~ ^[0-9]+$ ]]; then
+        choice_number=$((10#$choice))
+        if ((choice_number >= 1 && choice_number <= ${#rows[@]})); then
+          row="${rows[$((choice_number - 1))]}"
+          break
+        fi
+      fi
+      printf 'Please choose one of the numbered subscriptions.\n' >&2
+    done
+  fi
+
+  AZURE_SUBSCRIPTION_ID="${row%%|*}"
+  az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+  printf 'Azure subscription: %s\n' "${row#*|}"
+}
+
 ensure_azd_login() {
   if azd auth token \
     --tenant-id "$CUSTOMER_TENANT_ID" \
@@ -213,22 +297,43 @@ ensure_azd_login() {
     fail "Azure Developer CLI login did not produce a usable token for this tenant."
 }
 
+prepare_azd_environment() {
+  local environment_name="hermes-${CUSTOMER_TENANT_ID%%-*}"
+
+  if ! azd env select "$environment_name" >/dev/null 2>&1; then
+    azd env new "$environment_name" >/dev/null 2>&1
+  fi
+  azd env set AZURE_SUBSCRIPTION_ID "$AZURE_SUBSCRIPTION_ID" >/dev/null 2>&1
+}
+
 main() {
   have curl || fail "curl is required. Install curl and rerun this script."
 
   install_azure_cli
   install_azd
+  install_support_tools
   select_customer_tenant
   ensure_azure_login
+  select_customer_subscription
   ensure_azd_login
+  prepare_azd_environment
 
   export AZURE_TENANT_ID="$CUSTOMER_TENANT_ID"
+  export AZURE_SUBSCRIPTION_ID
+  export AZD_SKIP_FIRST_RUN=true
 
   info "Authentication is ready for tenant ${CUSTOMER_TENANT_ID}."
 
-  if [[ -f "${SCRIPT_DIR}/azure.yaml" ]]; then
-    printf 'Starting the Hermes private-tenant provisioning flow with azd.\n'
+  if [[ "$PROVISION_MODE" == "auth-only" ]]; then
+    printf 'Authentication-only setup is complete. No Azure resources were changed.\n'
+  elif [[ -f "${SCRIPT_DIR}/azure.yaml" ]]; then
     cd "$SCRIPT_DIR"
+    if [[ "$PROVISION_MODE" == "preview" ]]; then
+      printf 'Generating a read-only preview of the Hermes Azure resources.\n'
+      azd provision --preview
+      return
+    fi
+    printf 'Starting the Hermes private-tenant provisioning flow with azd.\n'
     azd provision
   else
     printf '%s\n' \

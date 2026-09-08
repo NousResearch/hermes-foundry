@@ -138,10 +138,25 @@ if $DRY_RUN; then
   exit 0
 fi
 
-az rest --method POST --resource "$RESOURCE" \
-  --url "${BASE}/agents/${AGENT}/microsoft365/publish?api-version=2025-11-15-preview" \
-  --headers "Content-Type=application/json" \
-  --body "@$WORK/request.json" -o json > "$WORK/response.json"
+TOKEN=$(az account get-access-token --resource "$RESOURCE" --query accessToken -o tsv)
+HTTP_STATUS=$(curl --silent --show-error \
+  --output "$WORK/response.json" \
+  --write-out '%{http_code}' \
+  --request POST \
+  "${BASE}/agents/${AGENT}/microsoft365/publish?api-version=2025-11-15-preview" \
+  --header "Authorization: Bearer ${TOKEN}" \
+  --header "Content-Type: application/json" \
+  --data-binary "@$WORK/request.json")
+
+if [[ "$HTTP_STATUS" != 2* ]]; then
+  if grep -qi 'version already exists' "$WORK/response.json"; then
+    echo "Publication version ${APP_VERSION} already exists; preserving it."
+    exit 0
+  fi
+  echo "ERROR: Foundry publication returned HTTP ${HTTP_STATUS}." >&2
+  sed -n '1,20p' "$WORK/response.json" >&2
+  exit 1
+fi
 
 python3 - "$WORK/response.json" <<'PY'
 import json, sys

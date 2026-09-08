@@ -17,9 +17,11 @@ There are three different deployment tasks:
 1. **Installing a prepared Hermes blueprint.** A Microsoft 365 tenant administrator uses the
    portal-only [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md). It covers licensing,
    blueprint approval, consent, hiring scope, instance creation, and validation. It requires no CLI.
-2. **Preparing Hermes in a new tenant.** An Azure deployment operator creates the runtime, models,
-   blueprint, permissions, package, and supporting automation by following
-   [ADVANCED_TENANT_DEPLOYMENT.md](ADVANCED_TENANT_DEPLOYMENT.md).
+2. **Preparing Hermes in a new tenant.** An authorized tenant deployment operator runs
+   `./setup.sh`. It installs missing Azure command-line tools, lets the operator choose an available
+   tenant identity, and runs the packaged `azd provision` flow. See
+   [ADVANCED_TENANT_DEPLOYMENT.md](ADVANCED_TENANT_DEPLOYMENT.md) for its exact operations and
+   permission requirements.
 3. **Building or updating Hermes after that installation exists.** This repository can build the
    complete container and safely create a new version of an existing hosted agent. That is the
    shorter workflow documented below.
@@ -102,13 +104,13 @@ scripts/        hosted-agent creation/publication and tenant-automation commands
 deployment/     tenant-neutral Microsoft 365 package templates
 Dockerfile      combined hosted-agent image
 start.sh        process startup and supervision
-build.sh        local publish and Azure Container Registry build
+build.sh        Azure Container Registry cloud image build
 new-version.sh  safe hosted-agent version creation and verification
 ```
 
-Generated publish directories (`edge/`, `gateway/`, and `sidecar/`) are ignored and created by
-`build.sh`. Tenant-specific blueprint records and upload ZIPs are written below the ignored
-`deployment-output/` directory.
+Tenant-specific blueprint records and upload ZIPs are written below the ignored
+`deployment-output/` directory. Local `edge/`, `gateway/`, and `sidecar/` staging directories from
+the older build path remain ignored; current ACR builds compile and copy directly from `src/`.
 
 ## Which instructions should I follow?
 
@@ -126,17 +128,23 @@ blueprint, follow the no-CLI [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALL
 - waiting for Microsoft 365 workload provisioning; and
 - testing Teams, mail, files, and routines.
 
-If the runtime and blueprint do not yet exist in the target tenant, use
-[ADVANCED_TENANT_DEPLOYMENT.md](ADVANCED_TENANT_DEPLOYMENT.md). It covers the Azure subscription,
-Foundry resources, models, registry, hosted agent, identity blueprint, package, permissions, and
-routine-role automation.
+If the runtime and blueprint do not yet exist in the target tenant, run:
 
-The current repository is not a one-command Azure infrastructure installer. However,
-`scripts/create-hosted-blueprint.sh` creates a first hosted agent safely after the Foundry project,
-models, registry, and image exist. `scripts/configure-blueprint-graph-permissions.sh` declares the
-reviewable Graph scope set without granting consent, and `scripts/publish-autopilot-blueprint.sh`
-submits the prepared blueprint for tenant-administrator review. `new-version.sh` remains the update
-command for an existing serving agent.
+```bash
+./setup.sh
+```
+
+The script installs missing Azure CLI and Azure Developer CLI packages, shows the Azure tenants and
+administrator identities already available on the machine, offers **Login into other one**, and
+then runs `azd provision`. That command creates the tenant's Azure/Foundry resources, builds Hermes
+in the tenant's registry, creates the Foundry-managed blueprint, declares the permissions that the
+administrator will review, installs the scoped routine-role automation, and submits a private
+tenant publication request. It does not approve the request, grant Microsoft 365 consent, assign a
+license, create an Agent User, or publish to a public marketplace.
+
+See [ADVANCED_TENANT_DEPLOYMENT.md](ADVANCED_TENANT_DEPLOYMENT.md) for the resources and required
+administrator privileges. `new-version.sh` remains the update command for an existing serving
+agent.
 
 ### I already have a provisioned Hermes Foundry stack
 
@@ -161,9 +169,9 @@ export REG="<registry-name>"
 ./build.sh v1
 ```
 
-The build publishes the edge, stages the gateway and sidecar, downloads the pinned Hermes base
-image as part of the remote ACR build, and stores the combined image in the target registry. It does
-not deploy or route the image yet.
+The ACR cloud build compiles the edge, copies the gateway and sidecar, downloads the pinned Hermes
+base image, and stores the combined image in the target registry. It does not require local Docker
+or .NET and does not deploy or route the image yet.
 
 ## Where the runtime settings come from
 

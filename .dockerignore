@@ -1,10 +1,9 @@
 .git
 .deployment.local
-src/edge
-src/gateway
-src/sidecar
 tests
 docs
+.azure
+deployment-output
 **/__pycache__
 **/bin
 **/obj

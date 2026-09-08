@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the Plan F image: Hermes + edge + gateway + M365 sidecar in one container.
+# Build the Hermes Foundry image: Hermes + edge + gateway + M365 sidecar in one container.
 #
 # ⛔ PLAN F HAS ITS OWN SOURCE, IN ./src — IT MUST NOT REACH OUTSIDE THIS DIRECTORY.
 #
@@ -40,19 +40,8 @@ if grep -vE '^[[:space:]]*#' "$0" | grep -qE '(^|[^.])\.\./'; then
   exit 1
 fi
 
-export DOTNET_ROOT="${DOTNET_ROOT:-$HOME/.dotnet}"
-export PATH="$DOTNET_ROOT:$PATH"
-
-echo "==> publishing the edge from the fork ($SRC/edge)"
-rm -rf edge && mkdir -p edge
-dotnet publish "$SRC/edge" -c Release -o ./edge
-[ -f edge/HelloWorldA365Agent.dll ] || { echo "publish produced no HelloWorldA365Agent.dll"; exit 1; }
-
-echo "==> staging gateway + sidecar from the fork"
-mkdir -p gateway sidecar
-cp "$SRC/gateway/app.py" gateway/
-cp "$SRC/sidecar/agent365_mcp.py" sidecar/
-
 echo "==> building in ACR (tag $TAG)"
+# Dockerfile compiles the committed edge source in its own SDK stage and copies the committed
+# gateway and sidecar directly. The operator therefore needs neither Docker nor .NET locally.
 az acr build --registry "$REG" --image "hermes-full-foundry:$TAG" --file Dockerfile .
 echo "==> done: $REG.azurecr.io/hermes-full-foundry:$TAG"

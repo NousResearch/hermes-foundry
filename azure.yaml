@@ -1,0 +1,22 @@
+name: hermes-agent-on-foundry
+
+infra:
+  provider: bicep
+  path: infra
+  module: main
+  parameters:
+    environmentName: ${AZURE_ENV_NAME}
+    location: ${AZURE_LOCATION}
+
+hooks:
+  preprovision:
+    shell: sh
+    run: ./scripts/azd-register-resource-providers.sh
+    interactive: false
+    continueOnError: false
+
+  postprovision:
+    shell: sh
+    run: ./scripts/azd-post-provision.sh
+    interactive: true
+    continueOnError: false

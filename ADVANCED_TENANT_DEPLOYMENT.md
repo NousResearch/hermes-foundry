@@ -14,6 +14,32 @@ The procedure was checked against Microsoft's current Foundry Autopilot and Agen
 on September 4, 2026. Autopilots with their own Agent User are still a Frontier feature, so verify
 the linked Microsoft pages before a production purchase or rollout.
 
+## Automated installation
+
+For a new customer tenant, run the repository's tenant-neutral installer:
+
+```bash
+./setup.sh
+```
+
+It installs Azure CLI and Azure Developer CLI when missing, installs its small local scripting
+dependencies, and then shows a numbered selector containing the Azure tenants and administrator
+identities available on the workstation. **Login into other one** opens Microsoft sign-in and
+refreshes the selector. After selection, the script verifies both CLI sessions against that tenant
+and runs `azd provision`.
+
+The packaged `azure.yaml` flow performs Steps 1 through 8 in this guide: it registers the required
+resource providers, provisions a Foundry account/project, initial model deployment and private
+container registry, builds the Hermes image in ACR, creates the hosted agent and its Foundry-managed
+blueprint, declares the Graph permissions for later admin review, submits the tenant-scoped
+publication request, and installs the constrained routine-role automation. The operator still
+needs Azure Owner, or Contributor plus Role Based Access Control Administrator, because the
+deployment creates narrowly scoped role assignments.
+
+The script does not accept Frontier terms, buy or assign licenses, grant Microsoft 365 admin
+consent, approve or activate the request, choose a hiring scope, or create an agent instance. Those
+steps remain in [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md).
+
 ## What the installation creates
 
 The installation has two independent halves:
@@ -87,16 +113,10 @@ Reference: [Hosted-agent permissions](https://learn.microsoft.com/en-us/azure/fo
 
 ### Workstation tools
 
-Install Git, Azure CLI, .NET 9, Python 3, and OpenSSL. Docker is not required because `build.sh`
-uses Azure Container Registry cloud builds.
-
-```bash
-az version
-dotnet --version
-python3 --version
-openssl version
-git --version
-```
+For the automated path, start with Bash and `curl`; `setup.sh` installs Azure CLI, Azure Developer
+CLI, Python 3, and OpenSSL when missing. Docker and .NET are not required locally because Azure
+Container Registry builds the complete image in the cloud. Git is needed only when cloning the
+repository instead of using a prepared source archive.
 
 Sign into the target tenant and subscription, then verify the selection before creating anything:
 

@@ -65,7 +65,7 @@ done
 }
 
 command -v az >/dev/null || { echo "Azure CLI (az) is required" >&2; exit 2; }
-command -v jq >/dev/null || { echo "jq is required" >&2; exit 2; }
+command -v python3 >/dev/null || { echo "Python 3 is required" >&2; exit 2; }
 az account show >/dev/null
 
 if [[ "$(az provider show --namespace Microsoft.Logic --query registrationState -o tsv)" != "Registered" ]]; then
@@ -118,7 +118,9 @@ DEPLOYMENT=$(az deployment group create \
     pollMinutes="$POLL_MINUTES" \
   -o json)
 
-WORKFLOW_PRINCIPAL_ID=$(jq -r '.properties.outputs.workflowPrincipalId.value' <<<"$DEPLOYMENT")
+WORKFLOW_PRINCIPAL_ID=$(python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["properties"]["outputs"]["workflowPrincipalId"]["value"])' \
+  <<<"$DEPLOYMENT")
 [[ "$WORKFLOW_PRINCIPAL_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || {
   echo "Deployment did not return a valid Logic App managed-identity principal ID" >&2
   exit 1
@@ -151,11 +153,9 @@ if [[ -z "$EXISTING_GRAPH_GRANT" ]]; then
   az rest --method POST \
     --url "https://graph.microsoft.com/v1.0/servicePrincipals/${WORKFLOW_PRINCIPAL_ID}/appRoleAssignments" \
     --headers Content-Type=application/json \
-    --body "$(jq -cn \
-      --arg principalId "$WORKFLOW_PRINCIPAL_ID" \
-      --arg resourceId "$GRAPH_SP_ID" \
-      --arg appRoleId "$GRAPH_AGENT_READ_ROLE_ID" \
-      '{principalId:$principalId,resourceId:$resourceId,appRoleId:$appRoleId}')" \
+    --body "$(python3 -c \
+      'import json,sys; print(json.dumps(dict(zip(("principalId","resourceId","appRoleId"),sys.argv[1:]))))' \
+      "$WORKFLOW_PRINCIPAL_ID" "$GRAPH_SP_ID" "$GRAPH_AGENT_READ_ROLE_ID")" \
     --output none
 else
   echo "Graph ${GRAPH_AGENT_READ_ROLE_VALUE} grant already exists."

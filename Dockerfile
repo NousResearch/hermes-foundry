@@ -25,9 +25,13 @@
 # v2026.8.3 — the build that ran through 2026-08-13/14 when the tools last worked end to end.
 ARG HERMES_IMAGE=docker.io/nousresearch/hermes-agent@sha256:16788311e2fa3035456bdc1bafb8ec2b1777db64ebf020af9bb7eb73c3712c9e
 
-# ---- build the edge -------------------------------------------------------------------------
-# Published on the host by build.sh (global.json pins the 9.0.3xx SDK, and ACR agents may not have
-# it). We only copy the output here, exactly as the thin-edge Dockerfile does.
+# Build the edge inside the container build so a new tenant can use Azure Container Registry's
+# cloud builder without installing .NET locally. global.json remains authoritative for the SDK
+# feature band and fails the image build if the pinned project can no longer compile.
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS edge-build
+WORKDIR /src
+COPY src/edge/ ./
+RUN dotnet publish HelloWorldA365Agent.csproj -c Release -o /out
 
 FROM ${HERMES_IMAGE} AS runtime
 
@@ -88,9 +92,9 @@ RUN /usr/bin/python3 /tmp/apply_fallback_entra_patch.py \
         /opt/hermes/agent/codex_responses_adapter.py \
     && rm /tmp/apply_fallback_entra_patch.py /tmp/apply_foundry_annotations_patch.py
 
-COPY edge/       /opt/edge/
-COPY gateway/    /opt/gateway/
-COPY sidecar/    /opt/sidecar/
+COPY --from=edge-build /out/ /opt/edge/
+COPY src/gateway/app.py /opt/gateway/app.py
+COPY src/sidecar/agent365_mcp.py /opt/sidecar/agent365_mcp.py
 COPY start.sh    /opt/start.sh
 RUN chmod +x /opt/start.sh
 

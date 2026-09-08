@@ -6,8 +6,9 @@ Validated end to end on 2026-08-27. A newly provisioned Microsoft 365 Hermes ins
 automatically, received **Foundry User** at the configured Foundry project scope, and then created a
 working Foundry Routine. No role was manually assigned to that Agent Identity.
 
-This is a tenant administrator bootstrap. It uses Azure CLI and an ARM template, not `azd`. The
-administrator runs the installer once for a Hermes blueprint and Foundry project; the deployed
+This is a tenant administrator bootstrap implemented with Azure CLI and an ARM template. The main
+`setup.sh`/`azd provision` flow invokes it automatically; it can also be run independently. The
+administrator installs it once for a Hermes blueprint and Foundry project, and the deployed
 workflow handles later Agent Identities.
 
 ## Why it is required
@@ -71,7 +72,8 @@ Azure manages its identity and token issuance.
 
 The administrator needs:
 
-- Bash, `jq`, and Azure CLI (`az`). `azd` is not used.
+- Bash, Python 3, and Azure CLI (`az`). `azd` is needed only when this is installed as part of the
+  complete `setup.sh` flow.
 - Permission to deploy a Consumption Logic App in the selected resource group.
 - `Microsoft.Authorization/roleAssignments/write` at the Foundry project or a parent scope, normally
   through Owner or Role Based Access Control Administrator during installation.
