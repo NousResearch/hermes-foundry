@@ -3,7 +3,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENTRA_OVERVIEW_URL="https://entra.microsoft.com/#view/Microsoft_AAD_IAM/TenantOverview.ReactView"
 
 info() {
   printf '\n%s\n' "$*"
@@ -103,20 +102,75 @@ install_azd() {
   have azd || fail "Azure Developer CLI installation did not make 'azd' available in PATH. Open a new terminal and rerun this script."
 }
 
-prompt_for_tenant_id() {
-  info "Customer tenant ID"
+login_with_azure_cli() {
+  info "Microsoft sign-in is required."
   printf '%s\n' \
-    "Open Microsoft Entra admin center:" \
-    "  ${ENTRA_OVERVIEW_URL}" \
-    "Then go to Identity > Overview and copy Tenant ID (also called Directory tenant ID)." \
-    "It looks like: 00000000-0000-0000-0000-000000000000"
+    "A Microsoft sign-in window will open now." \
+    "Choose an administrator account in the customer tenant and complete any MFA prompt."
+  az login --allow-no-subscriptions --output none
+}
+
+select_customer_tenant() {
+  local rows=()
+  local row existing_row tenant_id tenant_name account_name choice choice_number other_choice i duplicate
 
   while true; do
-    read -r -p "Customer tenant ID: " CUSTOMER_TENANT_ID
-    if [[ "$CUSTOMER_TENANT_ID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
-      break
+    if ! az account show >/dev/null 2>&1; then
+      printf 'Azure CLI is not signed in.\n'
+      login_with_azure_cli
     fi
-    printf 'That is not a valid tenant-ID GUID. Please copy Tenant ID from Entra Identity > Overview.\n' >&2
+
+    rows=()
+    while IFS= read -r row; do
+      [[ -n "$row" ]] || continue
+
+      tenant_id="${row%%|*}"
+      account_name="${row##*|}"
+      duplicate=false
+      for existing_row in "${rows[@]:-}"; do
+        if [[ "${existing_row%%|*}" == "$tenant_id" && "${existing_row##*|}" == "$account_name" ]]; then
+          duplicate=true
+          break
+        fi
+      done
+      [[ "$duplicate" == true ]] || rows+=("$row")
+    done < <(az account list --all \
+      --query "[?state=='Enabled'].join('|', [tenantId, tenantDisplayName, user.name])" \
+      --output tsv)
+
+    info "Choose the customer tenant and administrator identity:"
+    i=1
+    for row in "${rows[@]:-}"; do
+      [[ -n "$row" ]] || continue
+      tenant_id="${row%%|*}"
+      account_name="${row##*|}"
+      tenant_name="${row#*|}"
+      tenant_name="${tenant_name%|*}"
+      [[ -n "$tenant_name" ]] || tenant_name="Unnamed tenant"
+      printf '  %d) %s — %s\n' "$i" "$tenant_name" "$account_name"
+      i=$((i + 1))
+    done
+
+    other_choice="$i"
+    printf '  %d) Login into other one\n' "$other_choice"
+    read -r -p "Selection: " choice
+
+    if [[ "$choice" =~ ^[0-9]+$ ]]; then
+      choice_number=$((10#$choice))
+      if (( choice_number == other_choice )); then
+        login_with_azure_cli
+        continue
+      fi
+
+      if (( choice_number >= 1 && choice_number < other_choice )); then
+        row="${rows[$((choice_number - 1))]}"
+        CUSTOMER_TENANT_ID="${row%%|*}"
+        SELECTED_ACCOUNT_NAME="${row##*|}"
+        return
+      fi
+    fi
+
+    printf 'Please choose one of the numbered options.\n' >&2
   done
 }
 
@@ -129,10 +183,8 @@ ensure_azure_login() {
     return
   fi
 
-  info "Azure CLI is not signed in to this customer tenant."
-  printf '%s\n' \
-    "A Microsoft sign-in window will open now." \
-    "Sign in with a customer-tenant administrator account and complete any MFA prompt."
+  info "Azure CLI needs authorization for the selected customer tenant."
+  printf 'A Microsoft sign-in window will open now for %s.\n' "$SELECTED_ACCOUNT_NAME"
   az login --tenant "$CUSTOMER_TENANT_ID"
 
   az account get-access-token \
@@ -166,7 +218,7 @@ main() {
 
   install_azure_cli
   install_azd
-  prompt_for_tenant_id
+  select_customer_tenant
   ensure_azure_login
   ensure_azd_login
 
