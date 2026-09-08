@@ -1,5 +1,10 @@
 # Install Hermes Agent on Foundry
 
+This guide covers a **private custom-blueprint installation in one customer tenant**. Nothing in
+this flow submits Hermes to Azure Marketplace, AppSource, the public Teams Store, or another public
+catalog. In this guide, **publish** means making the custom blueprint available inside the
+customer's own Microsoft 365 tenant after its administrator approves it.
+
 This is the primary installation guide for a Microsoft 365 tenant administrator. It assumes Nous
 has already prepared and published the **Hermes Agent on Foundry** blueprint for the target tenant,
 or has supplied a tenant-specific Agent 365 installation package. The administrator does not need

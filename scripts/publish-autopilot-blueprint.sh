@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Submit an existing Foundry hosted agent as a Microsoft 365 Autopilot blueprint.
+# Submit an existing Foundry hosted agent as a private, tenant-scoped Microsoft 365 Autopilot
+# blueprint. This does not submit anything to Marketplace, AppSource, or a public catalog.
 #
 # This is a DEVELOPER operation. It creates only a pending publication request. It does not accept
 # Frontier terms, assign licenses, grant Microsoft Graph consent, choose a hiring scope, activate

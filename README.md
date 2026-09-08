@@ -114,6 +114,9 @@ Generated publish directories (`edge/`, `gateway/`, and `sidecar/`) are ignored 
 
 ### I am deploying to a new organization
 
+Hermes is installed as a private custom blueprint in the customer's tenant. This repository does
+not publish Hermes to Azure Marketplace, AppSource, or the public Teams Store.
+
 If Nous or a deployment operator has already published a tenant-ready **Hermes Agent on Foundry**
 blueprint, follow the no-CLI [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md). It covers:
 

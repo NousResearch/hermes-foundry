@@ -1,5 +1,9 @@
 # Advanced deployment of Hermes Agent on Foundry
 
+This is a private, tenant-scoped custom-blueprint deployment. It does not create or submit a public
+Marketplace, AppSource, or Teams Store listing. The target tenant's administrator performs the
+deployment and Microsoft 365 approval using resources and identities belonging to that tenant.
+
 This is the technical runbook for creating the Azure runtime, target-tenant blueprint, identity
 configuration, and Agent 365 package behind **Hermes Agent on Foundry**. It is intended for Azure
 deployment operators and identity administrators. A tenant administrator installing an already
