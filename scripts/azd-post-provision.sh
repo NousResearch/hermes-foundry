@@ -29,6 +29,21 @@ resource="https://ai.azure.com"
 output_dir="deployment-output/${AGENT}"
 mkdir -p "$output_dir"
 
+printf '\nWaiting for the deployment administrator\047s Foundry User role to become effective...\n'
+foundry_access=false
+for _ in $(seq 1 30); do
+  if az rest --method GET --resource "$resource" \
+    --url "${base}/deployments?api-version=v1" --output none >/dev/null 2>&1; then
+    foundry_access=true
+    break
+  fi
+  sleep 10
+done
+[[ "$foundry_access" == true ]] || {
+  printf 'ERROR: Foundry User was assigned at project scope but did not become effective within five minutes. Rerun ./setup.sh to resume.\n' >&2
+  exit 1
+}
+
 if az rest --method GET --resource "$resource" \
   --url "${base}/agents/${AGENT}?api-version=v1" \
   --output json > "${output_dir}/existing-agent.json" 2>/dev/null; then

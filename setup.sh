@@ -299,11 +299,17 @@ ensure_azd_login() {
 
 prepare_azd_environment() {
   local environment_name="hermes-${CUSTOMER_TENANT_ID%%-*}"
+  local principal_id
+
+  principal_id=$(az ad signed-in-user show --query id --output tsv)
+  [[ "$principal_id" =~ ^[0-9A-Fa-f-]{36}$ ]] || \
+    fail "Could not resolve the selected administrator's Entra object ID."
 
   if ! azd env select "$environment_name" >/dev/null 2>&1; then
     azd env new "$environment_name" >/dev/null 2>&1
   fi
   azd env set AZURE_SUBSCRIPTION_ID "$AZURE_SUBSCRIPTION_ID" >/dev/null 2>&1
+  azd env set AZURE_PRINCIPAL_ID "$principal_id" >/dev/null 2>&1
 }
 
 main() {

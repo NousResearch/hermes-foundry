@@ -12,6 +12,9 @@ param environmentName string
 @description('Azure region that supports Foundry hosted agents and the selected model.')
 param location string
 
+@description('Object ID of the tenant deployment administrator who must call the Foundry data plane during post-provisioning.')
+param deploymentPrincipalId string
+
 @description('Initial model deployed for Hermes. More compatible project deployments are discovered at runtime.')
 param modelName string = 'gpt-5-mini'
 
@@ -110,6 +113,10 @@ var cognitiveServicesUserRole = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   'a97b65f3-24c7-4388-baec-2e87135dc908'
 )
+var foundryUserRole = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '53ca6127-db72-4b80-b1b0-d745d6d5456d'
+)
 
 resource projectAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(registry.id, project.id, acrPullRole)
@@ -128,6 +135,19 @@ resource projectModelAccess 'Microsoft.Authorization/roleAssignments@2022-04-01'
     roleDefinitionId: cognitiveServicesUserRole
     principalId: project.identity.principalId
     principalType: 'ServicePrincipal'
+  }
+}
+
+// Azure Owner/Contributor is a management-plane role and does not grant the Foundry data actions
+// used by the post-provision scripts. Assign Foundry User to the selected deployment administrator
+// at this project only, matching Microsoft's hosted-agent prerequisite.
+resource deploymentOperatorFoundryUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(project.id, deploymentPrincipalId, foundryUserRole)
+  scope: project
+  properties: {
+    roleDefinitionId: foundryUserRole
+    principalId: deploymentPrincipalId
+    principalType: 'User'
   }
 }
 

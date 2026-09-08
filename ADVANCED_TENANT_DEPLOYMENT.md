@@ -36,6 +36,11 @@ publication request, and installs the constrained routine-role automation. The o
 needs Azure Owner, or Contributor plus Role Based Access Control Administrator, because the
 deployment creates narrowly scoped role assignments.
 
+The template also assigns **Foundry User** to the selected deployment administrator at this new
+project. Azure Owner/Contributor governs resource management but does not itself supply the Foundry
+data action used to enumerate deployments or create hosted-agent versions. The post-provision hook
+waits for this project-local role to propagate before calling the Foundry data plane.
+
 The script does not accept Frontier terms, buy or assign licenses, grant Microsoft 365 admin
 consent, approve or activate the request, choose a hiring scope, or create an agent instance. Those
 steps remain in [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md).
