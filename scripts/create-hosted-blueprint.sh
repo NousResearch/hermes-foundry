@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# Create a NEW Foundry hosted agent and its automatically managed Entra Agent Identity Blueprint.
-#
-# This never updates, routes, or deletes an existing agent. It creates two versions of the new
-# agent: v1 obtains the Foundry-generated blueprint ID; v2 adds that ID to the runtime configuration
-# needed by non-turn Agent OBO, then becomes the new agent's only traffic target.
+# Create a NEW Foundry hosted agent bound to the explicit Managed Agent Identity Blueprint created
+# by the Bicep deployment. This is the same construction used by the proven hfull deployment.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -19,6 +16,8 @@ Required environment:
   AGENT            New technical agent name, for example hermes-agent-on-foundry
   PRIMARY_MODEL    Existing model deployment name
   FALLBACK_MODEL   Existing model deployment name (may equal PRIMARY_MODEL)
+  BLUEPRINT_ID     Entra client ID returned by the explicit MAIB creation step
+  MAIB_NAME        Foundry name of that Managed Agent Identity Blueprint
 
 Image source, choose one:
   IMAGE             Full immutable ACR image reference containing @sha256:...
@@ -48,6 +47,8 @@ esac
 : "${AGENT:?Set AGENT to the NEW technical agent name}"
 : "${PRIMARY_MODEL:?Set PRIMARY_MODEL to an existing deployment name}"
 : "${FALLBACK_MODEL:?Set FALLBACK_MODEL to an existing deployment name}"
+: "${BLUEPRINT_ID:?Set BLUEPRINT_ID from the Bicep MAIB output}"
+: "${MAIB_NAME:?Set MAIB_NAME from the Bicep MAIB output}"
 
 [[ "$AGENT" =~ ^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$ ]] || {
   echo "ERROR: AGENT must be 3-64 lowercase letters, digits, or hyphens" >&2; exit 2;
@@ -57,6 +58,12 @@ esac
 }
 [[ "$FALLBACK_MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || {
   echo "ERROR: unsafe FALLBACK_MODEL deployment name" >&2; exit 2;
+}
+[[ "$BLUEPRINT_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || {
+  echo "ERROR: BLUEPRINT_ID must be a GUID" >&2; exit 2;
+}
+[[ "$MAIB_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{1,126}[A-Za-z0-9]$ ]] || {
+  echo "ERROR: unsafe MAIB_NAME" >&2; exit 2;
 }
 
 IDLE_TIMEOUT_SECONDS="${IDLE_TIMEOUT_SECONDS:-300}"
@@ -147,10 +154,11 @@ ROUTINE_BINDING_SIGN_KEY=$(openssl rand -hex 32)
 python3 - "$RESOLVED_IMAGE" "$PRIMARY_MODEL" "$FALLBACK_MODEL" "$MODEL_PRIORITY" \
   "$MODEL_SNAPSHOT" "${MODEL_ALLOWED_DEPLOYMENTS:-}" "$BASE" "$TENANT_ID" "$AGENT" \
   "$IDENTITY_SIGN_KEY" "$ROUTINE_BINDING_SIGN_KEY" "$IDLE_TIMEOUT_SECONDS" \
+  "$BLUEPRINT_ID" "$MAIB_NAME" \
   > "$WORK/v1.json" <<'PY'
 import json, sys
 (image, primary, fallback, priority, snapshot, allow, project, tenant, agent,
- identity_key, routine_key, idle) = sys.argv[1:]
+ identity_key, routine_key, idle, blueprint_id, blueprint_name) = sys.argv[1:]
 env = {
     "AgentLogic": "HermesRouter",
     "McpDiscoverySource": "Manifest",
@@ -164,6 +172,7 @@ env = {
     "MODEL_DEPLOYMENTS_SNAPSHOT": snapshot,
     "IdentitySignKey": identity_key,
     "RoutineBindingSignKey": routine_key,
+    "AgentBlueprintId": blueprint_id,
 }
 if allow:
     env["MODEL_ALLOWED_DEPLOYMENTS"] = allow
@@ -183,6 +192,10 @@ body = {
     "metadata": {"enableVnextExperience": "true"},
     "description": "Hermes Agent on Foundry",
     "agent_endpoint": {"protocols": ["activity", "responses"]},
+    "blueprint_reference": {
+        "type": "ManagedAgentIdentityBlueprint",
+        "blueprint_id": blueprint_name,
+    },
 }
 json.dump(body, sys.stdout)
 PY
@@ -226,7 +239,7 @@ PY
   return 1
 }
 
-echo "Creating bootstrap version..."
+echo "Creating hosted-agent version bound to explicit MAIB ${MAIB_NAME}..."
 create_version "$WORK/v1.json" "$WORK/v1-response.json"
 V1=$(python3 - "$WORK/v1-response.json" <<'PY'
 import json, sys
@@ -235,33 +248,19 @@ PY
 )
 [ -n "$V1" ] || { echo "ERROR: create response contained no version" >&2; exit 1; }
 wait_active "$V1" "$WORK/v1-active.json"
-BLUEPRINT_ID=$(python3 - "$WORK/v1-active.json" <<'PY'
+RETURNED_BLUEPRINT_ID=$(python3 - "$WORK/v1-active.json" <<'PY'
 import json, sys
 j=json.load(open(sys.argv[1])); print((j.get("blueprint") or {}).get("client_id") or "")
 PY
 )
-[[ "$BLUEPRINT_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || {
-  echo "ERROR: Foundry created no usable blueprint client ID" >&2; exit 1;
+returned_blueprint_lower=$(printf '%s' "$RETURNED_BLUEPRINT_ID" | tr '[:upper:]' '[:lower:]')
+expected_blueprint_lower=$(printf '%s' "$BLUEPRINT_ID" | tr '[:upper:]' '[:lower:]')
+[[ "$returned_blueprint_lower" == "$expected_blueprint_lower" ]] || {
+  echo "ERROR: hosted agent returned blueprint ${RETURNED_BLUEPRINT_ID}, expected ${BLUEPRINT_ID}" >&2
+  exit 1
 }
 
-# Add the Foundry-generated blueprint ID without exposing or copying any source instance identity.
-python3 - "$WORK/v1.json" "$BLUEPRINT_ID" > "$WORK/v2.json" <<'PY'
-import json, sys
-j=json.load(open(sys.argv[1])); j["definition"]["environment_variables"]["AgentBlueprintId"] = sys.argv[2]
-json.dump(j, sys.stdout)
-PY
-
-echo "Creating runtime version bound to the new blueprint..."
-create_version "$WORK/v2.json" "$WORK/v2-response.json"
-V2=$(python3 - "$WORK/v2-response.json" <<'PY'
-import json, sys
-print(json.load(open(sys.argv[1])).get("version") or "")
-PY
-)
-[ -n "$V2" ] || { echo "ERROR: second create response contained no version" >&2; exit 1; }
-wait_active "$V2" "$WORK/v2-active.json"
-
-python3 - "$V2" > "$WORK/route.json" <<'PY'
+python3 - "$V1" > "$WORK/route.json" <<'PY'
 import json, sys
 json.dump({"agent_endpoint": {
     "protocols": ["activity", "responses"],
@@ -276,16 +275,17 @@ az rest --method PATCH --resource "$RESOURCE" \
   --headers Content-Type=application/merge-patch+json \
   --body "@$WORK/route.json" >/dev/null
 
-python3 - "$OUTPUT_DIR/blueprint.json" "$AGENT" "$V2" "$BLUEPRINT_ID" "$BASE" "$TENANT_ID" <<'PY'
+python3 - "$OUTPUT_DIR/blueprint.json" "$AGENT" "$V1" "$BLUEPRINT_ID" "$MAIB_NAME" "$BASE" "$TENANT_ID" <<'PY'
 import json, sys
-path, agent, version, blueprint, endpoint, tenant = sys.argv[1:]
+path, agent, version, blueprint, blueprint_name, endpoint, tenant = sys.argv[1:]
 with open(path, "w") as stream:
     json.dump({"agentName": agent, "agentVersion": version, "blueprintId": blueprint,
-               "projectEndpoint": endpoint, "tenantId": tenant}, stream, indent=2)
+               "blueprintName": blueprint_name, "projectEndpoint": endpoint,
+               "tenantId": tenant}, stream, indent=2)
     stream.write("\n")
 PY
 chmod 600 "$OUTPUT_DIR/blueprint.json"
 
-echo "Created new Foundry hosted agent and blueprint successfully."
+echo "Created new Foundry hosted agent bound to the explicit blueprint successfully."
 echo "Local deployment record: $OUTPUT_DIR/blueprint.json (gitignored, mode 600)"
-echo "Next: configure blueprint permissions, create the upload ZIP, then complete admin approval."
+echo "Next: publish through Foundry's native Microsoft 365 publication API."

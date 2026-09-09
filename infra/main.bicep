@@ -36,7 +36,12 @@ var uniqueSuffix = uniqueString(subscription().subscriptionId, resourceGroup().i
 var accountName = 'hermes${uniqueSuffix}ai'
 var projectName = 'hermes-${uniqueSuffix}-project'
 var registryName = 'hermes${uniqueSuffix}acr'
-var agentName = 'hermes-agent-on-foundry'
+// Keep the user-facing publication name stable while giving this corrected hosted agent a new
+// technical name. The previous proof-of-concept agent was created without an explicit MAIB and is
+// deliberately left untouched for forensic comparison.
+var agentName = 'hermes-agent-on-foundry-v2'
+var blueprintName = '${agentName}-maib'
+var botName = 'hermes-${uniqueSuffix}-bot'
 
 resource account 'Microsoft.CognitiveServices/accounts@2025-09-01' = {
   name: accountName
@@ -105,6 +110,8 @@ resource initialModel 'Microsoft.CognitiveServices/accounts/deployments@2024-10-
   }
 }
 
+var foundryProjectEndpoint = project.properties.endpoints['AI Foundry API']
+
 var acrPullRole = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '7f951dda-4ed3-4680-a7ca-43fe172d538d'
@@ -151,6 +158,38 @@ resource deploymentOperatorFoundryUser 'Microsoft.Authorization/roleAssignments@
   }
 }
 
+// Match the proven hfull construction: create the MAIB explicitly before the hosted-agent version,
+// rather than relying on an implicitly generated blueprint.
+module deploymentScriptIdentity 'modules/deployment-script-identity.bicep' = {
+  name: 'agent-blueprint-deployment-identity'
+  params: {
+    identityName: 'hermes-${uniqueSuffix}-blueprint-deployer'
+  }
+}
+
+module managedAgentBlueprint 'modules/managed-agent-blueprint.bicep' = {
+  name: 'managed-agent-identity-blueprint'
+  params: {
+    deploymentIdentityResourceId: deploymentScriptIdentity.outputs.resourceId
+    projectEndpoint: foundryProjectEndpoint
+    blueprintName: blueprintName
+  }
+  dependsOn: [
+    deploymentOperatorFoundryUser
+    projectModelAccess
+  ]
+}
+
+module botService 'modules/bot-service.bicep' = {
+  name: 'hermes-bot-service'
+  params: {
+    botName: botName
+    displayName: 'Hermes Agent on Foundry'
+    blueprintClientId: managedAgentBlueprint.outputs.clientId
+    endpoint: '${foundryProjectEndpoint}/agents/${agentName}/endpoint/protocols/activityProtocol?api-version=2025-05-15-preview'
+  }
+}
+
 output ACCOUNT string = account.name
 output PROJECT string = project.name
 output AGENT string = agentName
@@ -158,8 +197,11 @@ output REG string = registry.name
 output TAG string = 'v1'
 output PRIMARY_MODEL string = initialModel.name
 output FALLBACK_MODEL string = initialModel.name
-output AZURE_AI_PROJECT_ENDPOINT string = project.properties.endpoints['AI Foundry API']
+output AZURE_AI_PROJECT_ENDPOINT string = foundryProjectEndpoint
 output RESOURCE_GROUP string = resourceGroup().name
 output SUBSCRIPTION_ID string = subscription().subscriptionId
 output TENANT_ID string = tenant().tenantId
 output LOCATION string = location
+output BLUEPRINT_ID string = managedAgentBlueprint.outputs.clientId
+output MAIB_NAME string = blueprintName
+output BOT_SERVICE_ID string = botService.outputs.resourceId
