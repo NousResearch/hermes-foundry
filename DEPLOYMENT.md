@@ -349,13 +349,21 @@ have been tested.
 
 ## 12. Approve and instantiate the Agent User
 
-1. In **Microsoft 365 admin center → Agents**, find the requested blueprint and approve it for only
-   the pilot users/group.
-2. In [Teams Developer Portal](https://dev.teams.microsoft.com/), open the blueprint configuration.
-   Configure the Foundry deployment as a **Bot-based** agent and use the Azure Bot/blueprint ID
-   emitted by the bootstrap.
-3. Create an agent instance through the Microsoft 365/Teams Agent 365 experience and assign its
-   human owner.
+1. Open [Agents > Requests](https://admin.cloud.microsoft/#/agents/all/requested), find the requested
+   blueprint, and approve it for only the pilot users/group.
+2. Open [Agents > All agents](https://admin.cloud.microsoft/#/agents/all), select the blueprint,
+   click **Enable**, and confirm that it is Available.
+3. Open
+   `https://dev.teams.microsoft.com/tools/agent-blueprint/<BLUEPRINT_ID>/configuration`, replacing
+   `<BLUEPRINT_ID>` with the ID emitted by the bootstrap. Change **Agent Type** from
+   **Notification/API Based** to **Bot Based**, set **Bot ID** to that same Blueprint ID, save, and
+   verify the values survive a reload.
+4. Only then create an agent instance through the Microsoft 365/Teams Agent 365 experience and
+   assign its human owner.
+
+The bootstrap prints the exact Developer Portal URL and Bot ID. Automatic mutation of this setting
+is not part of the supported installer yet; a previously recorded Developer Portal API call returned
+HTTP 403, so supported tenant-admin automation remains a research item rather than an assumed API.
 
 Do not substitute a raw Graph-created Entra identity for this step. An identity created directly
 through the agent identity API can exist in Entra without the fully provisioned Microsoft 365

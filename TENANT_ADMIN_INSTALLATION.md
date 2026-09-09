@@ -243,6 +243,26 @@ The approval above is for the reusable blueprint. Employees included in the hiri
 create instances without a separate per-instance approval. Restrict the hiring scope when the
 organization needs centralized approval or naming control.
 
+## Step 6: connect the Foundry-hosted agent to its Azure Bot
+
+This step is required before anyone creates an instance. Publication can leave a new blueprint set
+to **Notification/API Based** with no Bot ID. That configuration is not correct for this
+Foundry-hosted Hermes deployment and can leave **Create instance** or **Add instance** waiting
+without completing.
+
+1. Copy the **Blueprint ID** printed by `./setup.sh`.
+2. Open
+   `https://dev.teams.microsoft.com/tools/agent-blueprint/<BLUEPRINT_ID>/configuration`, replacing
+   `<BLUEPRINT_ID>` with that printed value.
+3. Change **Agent Type** from **Notification/API Based** to **Bot Based**.
+4. In **Bot ID**, enter the same Blueprint ID.
+5. Select **Save**.
+6. Reload the page and confirm that it still shows **Bot Based** and the same Bot ID.
+
+The current installer prints the exact URL and value but deliberately does not change this portal
+setting automatically. Automating the Developer Portal-only configuration through a supported,
+tenant-admin API remains a research item.
+
 ### Consent and approval checklist
 
 | Action | Who performs it | Where | Required once or repeatedly? |
@@ -251,13 +271,14 @@ organization needs centralized approval or naming control.
 | Enable Frontier for pilot users, if required | Global Administrator | [Copilot Frontier settings](https://admin.cloud.microsoft/#/copilot/settings/ViewAll/:/CopilotSettings/Frontier) | Once per audience; change when the pilot group changes |
 | Approve the Hermes blueprint and its Graph scopes | Global Administrator, or AI Administrator where tenant consent policy permits | [Agents > Requests](https://admin.cloud.microsoft/#/agents/all/requested) > Hermes > **Accept permissions** | Once for the tenant-specific blueprint permission set; repeat when a later version requests new scopes |
 | Choose the Hermes policy template and hiring scope | Global Administrator or AI Administrator | The same Hermes publication wizard | Once at publication; administrators can change policy and scope later |
+| Set Agent Type to Bot Based and set Bot ID | Blueprint owner or tenant administrator | Teams Developer Portal blueprint configuration | Once per blueprint |
 | Give Hermes access to a document, site, mailbox, team, or other resource | Resource owner or Microsoft 365 administrator | The normal SharePoint, OneDrive, Exchange, or Teams sharing UI | Per resource, group, or policy |
 
 Azure role assignments used by the hosted runtime and routines are RBAC, not Microsoft Graph
 consent. They belong to the one-time advanced deployment. There is no employee OAuth-consent step
 in this own-identity design.
 
-## Step 6: create the first Hermes instance
+## Step 7: create the first Hermes instance
 
 There are two UI paths in the current preview. Microsoft's public Foundry quickstart documents the
 employee path. The administrator path below exists in the Microsoft 365 admin center we tested, but
@@ -290,7 +311,7 @@ naming or a separate per-instance approval is required, use the administrator-cr
 the hiring scope to **None** or a tightly controlled group. This repository does not replace
 Microsoft's managed Create Instance pipeline.
 
-## Step 7: wait for Microsoft provisioning
+## Step 8: wait for Microsoft provisioning
 
 Instance creation is asynchronous. Wait until Microsoft reports the instance as ready. Do not test
 mail or files while the identity or workloads are still provisioning.
@@ -306,7 +327,7 @@ After completion, confirm that:
 Mailbox and OneDrive readiness can lag behind identity creation. If those tools initially report
 that the resource cannot be found, wait for workload provisioning and retry before changing access.
 
-## Step 8: perform a short acceptance test
+## Step 9: perform a short acceptance test
 
 From the owner's Teams chat, ask Hermes to perform read-only checks first:
 

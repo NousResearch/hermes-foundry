@@ -88,13 +88,28 @@ if [[ "${HERMES_INSTALL_ROUTINE_AUTOMATION:-true}" == "true" ]]; then
     --include-existing
 fi
 
-cat <<'EOF'
+cat <<EOF
 
-Developer provisioning is complete.
+Developer provisioning is complete. Finish these required tenant-administrator steps in order:
 
-Nothing was submitted to Marketplace, AppSource, or the public Teams Store. A tenant administrator
-must now open Microsoft 365 admin center > Agents > All agents > Requests, review Hermes Agent on
-Foundry, choose its hiring scope and policy, grant consent, and activate it. Microsoft then owns the
+1. APPROVE THE BLUEPRINT
+   Open: https://admin.cloud.microsoft/#/agents/all/requested
+   Select "Hermes Agent on Foundry", review its permissions and hiring scope, and click Approve.
+
+2. ENABLE THE BLUEPRINT
+   Open: https://admin.cloud.microsoft/#/agents/all
+   Select "Hermes Agent on Foundry" and click Enable. Confirm that its status is Available.
+
+3. CONNECT THE FOUNDRY BOT
+   Open: https://dev.teams.microsoft.com/tools/agent-blueprint/${BLUEPRINT_ID}/configuration
+   Change Agent Type from Notification/API Based to Bot Based.
+   Enter this Bot ID: ${BLUEPRINT_ID}
+   Click Save and confirm that the saved page still shows Bot Based and the same Bot ID.
+
+Do not create an instance until all three steps are complete. A blank Bot ID or Notification/API
+Based configuration can leave Create/Add instance waiting without completing.
+
+Nothing was submitted to Marketplace, AppSource, or the public Teams Store. Microsoft owns the
 managed Create instance flow and provisions each licensed Agent Identity and Agent User. The
 installed tenant automation grants only the Foundry User role, at this Hermes project, to new child
 Agent Identities from this blueprint so they can manage their own Foundry routines after
