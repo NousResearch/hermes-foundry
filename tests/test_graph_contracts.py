@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import sys
 import types
@@ -64,6 +65,9 @@ def _load_sidecar():
 
 class GraphContractTests(unittest.TestCase):
     def setUp(self):
+        self.authority = mock.patch.dict(os.environ, {"AGENT_CALLER_TIER": "owner"})
+        self.authority.start()
+        self.addCleanup(self.authority.stop)
         self.m = _load_sidecar()
 
     def test_get_honors_numeric_retry_after_and_recovers(self):

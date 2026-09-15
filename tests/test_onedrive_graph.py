@@ -2,6 +2,7 @@ import importlib.util
 import inspect
 import io
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -51,6 +52,9 @@ def _drive_404(url):
 
 class GraphOneDriveTests(unittest.TestCase):
     def setUp(self):
+        self.authority = mock.patch.dict(os.environ, {"AGENT_CALLER_TIER": "owner"})
+        self.authority.start()
+        self.addCleanup(self.authority.stop)
         self.m = _load_sidecar()
 
     def test_unproven_native_provisioning_tools_are_not_exposed(self):
@@ -143,6 +147,46 @@ class GraphOneDriveTests(unittest.TestCase):
             "saveToSentItems": True,
         })
         self.assertEqual(result, "Sent.")
+
+    def test_outsider_graph_mutations_are_blocked_before_token_or_network(self):
+        with mock.patch.object(self.m, "_caller_tier", return_value="outsider"), \
+             mock.patch.object(self.m, "_token") as token, \
+             mock.patch.object(self.m.urllib.request, "urlopen") as urlopen:
+            results = [
+                self.m._graph(method, "me/example", {"value": "untrusted"})
+                for method in ("POST", "PUT", "PATCH", "DELETE")
+            ]
+
+        token.assert_not_called()
+        urlopen.assert_not_called()
+        for result in results:
+            self.assertIn("ACTION NOT PERFORMED", result)
+            self.assertIn("No request was sent to Graph", result)
+
+    def test_outsider_binary_upload_is_blocked_before_token_or_network(self):
+        with mock.patch.object(self.m, "_caller_tier", return_value="outsider"), \
+             mock.patch.object(self.m, "_token") as token, \
+             mock.patch.object(self.m.urllib.request, "urlopen") as urlopen:
+            result = self.m._graph_put_bytes("me/drive/items/item-1/content", b"bytes")
+
+        token.assert_not_called()
+        urlopen.assert_not_called()
+        self.assertIn("ACTION NOT PERFORMED", result)
+
+    def test_outsider_tool_results_never_claim_mutation_success(self):
+        with mock.patch.object(self.m, "_caller_tier", return_value="outsider"), \
+             mock.patch.object(self.m.urllib.request, "urlopen") as urlopen:
+            email = self.m.send_email("john@example.com", "Test", "Body")
+            event = self.m.create_event(
+                "Test", "2026-09-17T09:00:00", "2026-09-17T09:30:00"
+            )
+            share = self.m.share_file("item-1", "john@example.com")
+
+        urlopen.assert_not_called()
+        self.assertNotEqual("Sent.", email)
+        self.assertIn("ACTION NOT PERFORMED", email)
+        self.assertIn("EVENT NOT CREATED", event)
+        self.assertIn("SHARE FAILED", share)
 
     def test_mailbox_parser_handles_quoted_commas_and_multiple_recipients(self):
         self.assertEqual(self.m._mailboxes(

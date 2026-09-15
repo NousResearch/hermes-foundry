@@ -540,6 +540,10 @@ def _graph(method: str, path: str, body=None, raw_body: bool = False) -> str:
 
     503/504 get the same treatment: they are transient by definition.
     """
+    method = method.upper()
+    if method not in {"GET", "HEAD", "OPTIONS"} and _caller_tier() == "outsider":
+        return ("ERROR: ACTION NOT PERFORMED — an outside or unidentified caller cannot change this "
+                "Agent User's Microsoft 365 resources. No request was sent to Graph.")
     try:
         url = _graph_url(path)
     except ValueError as e:
@@ -558,7 +562,6 @@ def _graph(method: str, path: str, body=None, raw_body: bool = False) -> str:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
 
-    method = method.upper()
     attempts = 4
     for attempt in range(attempts):
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -658,6 +661,9 @@ def _graph_bytes(method: str, path: str):
 
 def _graph_put_bytes(path: str, blob: bytes, if_match: str = "") -> str:
     """Upload binary content, optionally refusing to overwrite a concurrently changed item."""
+    if _caller_tier() == "outsider":
+        return ("ERROR: ACTION NOT PERFORMED — an outside or unidentified caller cannot change this "
+                "Agent User's Microsoft 365 resources. No request was sent to Graph.")
     try:
         url = _graph_url(path)
     except ValueError as e:

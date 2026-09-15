@@ -1418,11 +1418,12 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         {
             req.Headers.TryAddWithoutValidation("X-Agent-Graph-Token", graphToken);
 
-            // Who is asking, for the M365 DATA PLANE. The prompt policy tells the model what it should
-            // do; this tells the sidecar what it is allowed to do, which is the part a prompt
-            // injection cannot talk its way past. Derived from the same CallerTier as the prompt, so
-            // the two cannot disagree. No turn (a routine) means no identified caller: send
-            // "outsider" and let the sidecar refuse, rather than defaulting open.
+            // Who is asking, for the M365 DATA PLANE. The sidecar uses this as a hard stop for every
+            // outsider Graph mutation and for owner-only memory/routine operations. Colleague
+            // delegation is still interpreted from owner memory by Hermes; it is not yet a
+            // structured server-verifiable grant. No turn on this Activity path means no identified
+            // caller: send "outsider" and fail closed. Verified Responses-routine turns set owner
+            // only after validating their signed immutable binding.
             if (!string.IsNullOrEmpty(_agent?.EmailId))
                 req.Headers.TryAddWithoutValidation("X-Agent-Upn", _agent.EmailId);
             EdgeLog("token.minted", $"len={graphToken.Length}");
