@@ -91,8 +91,26 @@ class GatewayPrivacyTests(unittest.TestCase):
         handler.do_POST()
 
         self.assertEqual(
-            {"token": "", "upn": "", "tier": "outsider", "routine_capability": ""},
+            {
+                "token": "", "upn": "", "tier": "outsider",
+                "routine_capability": "", "correlation": "",
+            },
             self.gateway._agent_token,
+        )
+
+    def test_log_lines_receive_current_turn_correlation_without_identity(self):
+        self.gateway._agent_token["correlation"] = "safe-correlation"
+        output = io.StringIO()
+        try:
+            with mock.patch.object(self.gateway, "_ship"):
+                with contextlib.redirect_stdout(output):
+                    self.gateway.log("tool completed")
+        finally:
+            self.gateway._clear_turn_authority()
+
+        self.assertEqual(
+            "tool completed | correlation=safe-correlation",
+            output.getvalue().strip(),
         )
 
 

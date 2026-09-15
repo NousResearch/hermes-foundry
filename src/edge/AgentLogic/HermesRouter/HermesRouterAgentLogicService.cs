@@ -1300,6 +1300,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         };
         if (!string.IsNullOrEmpty(_routerKey))
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _routerKey);
+        req.Headers.TryAddWithoutValidation("X-Hermes-Correlation-Id", CurrentCorrelationId());
         req.Headers.TryAddWithoutValidation("X-Hermes-Session-Key", sessionKey);
         // ⚠️ TWO DIFFERENT HEADERS, AND WE WERE ONLY SENDING ONE. From Hermes'
         // gateway/platforms/api_server.py, verbatim:
@@ -1604,7 +1605,13 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                 // Otherwise the id only surfaces inside an error message, so a failure that does not
                 // reach our code (inbound email, for instance) leaves nothing to stream.
                 var session = Environment.GetEnvironmentVariable("FOUNDRY_AGENT_SESSION_ID") ?? "(unset)";
-                var payload = JsonSerializer.Serialize(new { stage, detail, session });
+                var payload = JsonSerializer.Serialize(new
+                {
+                    stage,
+                    detail,
+                    session,
+                    correlation = CurrentCorrelationId()
+                });
                 using var req = new HttpRequestMessage(HttpMethod.Post, $"{_routerUrl}/v1/edge-log")
                 {
                     Content = new StringContent(payload, Encoding.UTF8, "application/json")
@@ -1615,6 +1622,12 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             }
             catch { /* diagnostics are best-effort by design */ }
         });
+    }
+
+    private static string CurrentCorrelationId()
+    {
+        var trace = System.Diagnostics.Activity.Current?.TraceId.ToString();
+        return string.IsNullOrWhiteSpace(trace) ? Guid.NewGuid().ToString("N") : trace;
     }
 
     // ---- helpers ----------------------------------------------------------------------------

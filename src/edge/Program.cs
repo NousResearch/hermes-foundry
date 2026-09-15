@@ -273,7 +273,14 @@ app.MapPost("/api/messages", async (HttpRequest request, HttpResponse response, 
         if (!string.IsNullOrEmpty(routerUrl))
         {
             var session = Environment.GetEnvironmentVariable("FOUNDRY_AGENT_SESSION_ID") ?? "(unset)";
-            var payload = System.Text.Json.JsonSerializer.Serialize(new { stage = "http.in", detail = peek, session });
+            var trace = System.Diagnostics.Activity.Current?.TraceId.ToString();
+            var payload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                stage = "http.in",
+                detail = peek,
+                session,
+                correlation = string.IsNullOrWhiteSpace(trace) ? Guid.NewGuid().ToString("N") : trace
+            });
             using var req = new HttpRequestMessage(HttpMethod.Post, $"{routerUrl}/v1/edge-log")
             { Content = new StringContent(payload, Encoding.UTF8, "application/json") };
             var rk = cfg["RouterKey"] ?? "";

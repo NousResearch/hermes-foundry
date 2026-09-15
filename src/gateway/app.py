@@ -74,6 +74,7 @@ PASSTHROUGH = (
     # This list is an ALLOW-LIST: anything not named here is stripped. Adding a header at the edge is
     # therefore only half a change. Grep both ends.
     "x-hermes-session-id",
+    "x-hermes-correlation-id",
     "x-identity-assertion",
     "x-agent-graph-token",
     "x-agent-upn",
@@ -82,7 +83,9 @@ PASSTHROUGH = (
 
 # Last agent Graph token seen on a turn, held in memory only. Served to the m365 sidecar via
 # GET /v1/agent-token. Never written to disk, never logged.
-_agent_token = {"token": "", "upn": "", "tier": "outsider", "routine_capability": ""}
+_agent_token = {
+    "token": "", "upn": "", "tier": "outsider", "routine_capability": "", "correlation": ""
+}
 _authority_lock = threading.Lock()
 
 # The sidecar asks for the current turn's authority through /v1/agent-token, but that request does
@@ -97,7 +100,12 @@ _turn_lock = threading.Lock()
 def _clear_turn_authority():
     with _authority_lock:
         _agent_token.update(
-            token="", upn="", tier="outsider", routine_capability="")
+            token="", upn="", tier="outsider", routine_capability="", correlation="")
+
+
+def _current_correlation():
+    with _authority_lock:
+        return _agent_token.get("correlation", "")
 
 # Files the sidecar produced during the current turn that belong on the reply as attachments.
 #
@@ -160,6 +168,7 @@ _LOG_SECRET_QUERY = re.compile(
     r"(?i)([?&](?:sig|token|code|key|client_secret|assertion|access_token)=)[^&\s]+")
 _LOG_TENANT_HOST = re.compile(
     r"(?i)\b[a-z0-9-]+(?:-my\.sharepoint\.com|\.onmicrosoft\.com)\b")
+_CORRELATION = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 
 def _log_fingerprint(value):
@@ -178,9 +187,17 @@ def _redact_log_message(message):
     return text
 
 
+def _safe_correlation(value=""):
+    candidate = str(value or "")
+    return candidate if _CORRELATION.fullmatch(candidate) else os.urandom(8).hex()
+
+
 def log(*parts):
     # Unbuffered so `az containerapp logs show --follow` is actually live.
     message = _redact_log_message(" ".join(str(p) for p in parts))
+    correlation = _current_correlation()
+    if correlation and "correlation=" not in message:
+        message += f" | correlation={correlation}"
     print(message, flush=True)
     _ship(message)
 
@@ -405,8 +422,14 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 d = json.loads(raw or b"{}")
             except Exception:
-                d = {"stage": "unparseable", "detail": raw[:200].decode("utf-8", "replace")}
-            log(f"[edge] {d.get('stage','?')} | {d.get('detail','')} | session={d.get('session','?')}")
+                d = {"stage": "unparseable", "detail": f"bytes={len(raw)}"}
+            session = str(d.get("session") or "")
+            session_tag = hashlib.sha256(session.encode()).hexdigest()[:12] if session else "none"
+            correlation = str(d.get("correlation") or "")
+            suffix = (f" | correlation={correlation}"
+                      if _CORRELATION.fullmatch(correlation) else "")
+            log(f"[edge] {d.get('stage','?')} | {d.get('detail','')} | "
+                f"session_tag={session_tag}{suffix}")
             self._send(204)
             return
 
@@ -455,6 +478,8 @@ class Handler(BaseHTTPRequestHandler):
                     upn=upn,
                     tier=self.headers.get("X-Caller-Tier") or "outsider",
                     routine_capability=self.headers.get("X-Routine-Capability") or "",
+                    correlation=_safe_correlation(
+                        self.headers.get("X-Hermes-Correlation-Id")),
                 )
             if tok:
                 log("[edge] agent.token.refreshed")
@@ -569,7 +594,7 @@ class Handler(BaseHTTPRequestHandler):
                                 f"{HERMES_COLD_START_WAIT}s for Hermes to finish booting")
                         time.sleep(2)
                         continue
-                    correlation = os.urandom(8).hex()
+                    correlation = _current_correlation() or os.urandom(8).hex()
                     log(f"[edge] hermes.unreachable | type={type(e).__name__} | "
                         f"correlation={correlation}")
                     self._send(502, json.dumps({

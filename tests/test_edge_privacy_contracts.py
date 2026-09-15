@@ -56,6 +56,16 @@ class EdgePrivacyContractTests(unittest.TestCase):
         self.assertNotIn("Response: {Response}", source)
         self.assertNotIn("({Url})", source)
 
+    def test_activity_and_routine_paths_forward_safe_correlation(self):
+        activity = (
+            ROOT / "src/edge/AgentLogic/HermesRouter/HermesRouterAgentLogicService.cs"
+        ).read_text()
+        routine = (
+            ROOT / "src/edge/AgentLogic/ResponsesProtocol/HermesResponseHandler.cs"
+        ).read_text()
+        self.assertIn('"X-Hermes-Correlation-Id", CurrentCorrelationId()', activity)
+        self.assertIn('"X-Hermes-Correlation-Id", CurrentCorrelationId()', routine)
+
 
 if __name__ == "__main__":
     unittest.main()

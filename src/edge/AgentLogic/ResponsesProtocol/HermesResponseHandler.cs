@@ -107,6 +107,7 @@ public sealed class HermesResponseHandler(
         };
         if (!string.IsNullOrEmpty(_routerKey))
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _routerKey);
+        req.Headers.TryAddWithoutValidation("X-Hermes-Correlation-Id", CurrentCorrelationId());
         req.Headers.TryAddWithoutValidation("X-Hermes-Session-Key", sessionKey);
         req.Headers.TryAddWithoutValidation("X-Hermes-Session-Id", sessionKey);
         // The owner authorized this exact immutable task when create_routine was called. Treat the
@@ -223,7 +224,13 @@ public sealed class HermesResponseHandler(
                 using var req = new HttpRequestMessage(HttpMethod.Post, $"{_routerUrl}/v1/edge-log")
                 {
                     Content = new StringContent(
-                        JsonSerializer.Serialize(new { stage, detail, session }),
+                        JsonSerializer.Serialize(new
+                        {
+                            stage,
+                            detail,
+                            session,
+                            correlation = CurrentCorrelationId()
+                        }),
                         Encoding.UTF8, "application/json")
                 };
                 if (!string.IsNullOrEmpty(_routerKey))
@@ -232,5 +239,11 @@ public sealed class HermesResponseHandler(
             }
             catch { /* best effort by design */ }
         });
+    }
+
+    private static string CurrentCorrelationId()
+    {
+        var trace = System.Diagnostics.Activity.Current?.TraceId.ToString();
+        return string.IsNullOrWhiteSpace(trace) ? Guid.NewGuid().ToString("N") : trace;
     }
 }
