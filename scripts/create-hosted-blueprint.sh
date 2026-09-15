@@ -87,10 +87,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if az rest --method GET --resource "$RESOURCE" \
-    --url "${BASE}/agents/${AGENT}?api-version=v1" >/dev/null 2>&1; then
+if python3 ./scripts/foundry_agent_lookup.py \
+    --url "${BASE}/agents/${AGENT}?api-version=v1" \
+    --output "$WORK/existing-agent.json"; then
   echo "ERROR: agent '${AGENT}' already exists. This script will not alter it." >&2
   exit 1
+else
+  lookup_status=$?
+  if [[ "$lookup_status" -ne 4 ]]; then
+    echo "ERROR: agent existence could not be verified. This script will not create or alter it." >&2
+    exit 1
+  fi
 fi
 
 if [ -n "${IMAGE:-}" ]; then

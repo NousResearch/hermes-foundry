@@ -44,11 +44,12 @@ done
   exit 1
 }
 
-if az rest --method GET --resource "$resource" \
+agent_lookup="${output_dir}/existing-agent.json"
+if python3 ./scripts/foundry_agent_lookup.py \
   --url "${base}/agents/${AGENT}?api-version=v1" \
-  --output json > "${output_dir}/existing-agent.json" 2>/dev/null; then
+  --output "$agent_lookup"; then
   printf '\nThe hosted agent already exists; preserving it and resuming publication.\n'
-  LIVE_BLUEPRINT_ID=$(python3 - "${output_dir}/existing-agent.json" <<'PY'
+  LIVE_BLUEPRINT_ID=$(python3 - "$agent_lookup" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1]))
 print((data.get("blueprint") or {}).get("client_id") or "")
@@ -65,8 +66,14 @@ PY
     exit 1
   }
 else
-  printf '\nCreating the Hermes hosted agent bound to its explicit managed identity blueprint...\n'
-  ./scripts/create-hosted-blueprint.sh
+  lookup_status=$?
+  if [[ "$lookup_status" -eq 4 ]]; then
+    printf '\nCreating the Hermes hosted agent bound to its explicit managed identity blueprint...\n'
+    ./scripts/create-hosted-blueprint.sh
+  else
+    printf 'ERROR: hosted-agent existence could not be verified; refusing to create or alter it.\n' >&2
+    exit 1
+  fi
 fi
 
 printf '\nSubmitting Hermes Agent on Foundry for private tenant review...\n'
