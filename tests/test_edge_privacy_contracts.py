@@ -68,6 +68,11 @@ class EdgePrivacyContractTests(unittest.TestCase):
         self.assertIn('"X-Hermes-Correlation-Id", CurrentCorrelationId()', activity)
         self.assertIn('"X-Hermes-Correlation-Id", CurrentCorrelationId()', routine)
 
+    def test_production_edge_does_not_return_detailed_framework_errors(self):
+        settings = (ROOT / "src/edge/appsettings.json").read_text()
+        self.assertIn('"DetailedErrors": false', settings)
+        self.assertNotIn('"DetailedErrors": true', settings)
+
 
 if __name__ == "__main__":
     unittest.main()
