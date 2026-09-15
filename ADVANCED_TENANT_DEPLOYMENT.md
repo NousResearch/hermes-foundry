@@ -22,6 +22,17 @@ For a new customer tenant, run the repository's tenant-neutral installer:
 ./setup.sh
 ```
 
+For a read-only prerequisite check before deployment, run:
+
+```bash
+./setup.sh --validate
+```
+
+This signs into the selected tenant but creates no Azure resources and assigns no roles. It checks
+Azure/Foundry token acquisition, the active subscription, required resource-provider registration,
+Bicep, `azd`, and `AZURE_LOCATION` when supplied. Microsoft 365 licensing and blueprint/workload
+approval are separate control-plane checks covered by the tenant-admin guide.
+
 It installs Azure CLI and Azure Developer CLI when missing, installs its small local scripting
 dependencies, and then shows a numbered selector containing the Azure tenants and administrator
 identities available on the workstation. **Login into other one** opens Microsoft sign-in and

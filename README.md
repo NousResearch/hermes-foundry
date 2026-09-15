@@ -142,6 +142,13 @@ administrator will review, installs the scoped routine-role automation, and subm
 tenant publication request. It does not approve the request, grant Microsoft 365 consent, assign a
 license, create an Agent User, or publish to a public marketplace.
 
+Before provisioning, the same operator can run `./setup.sh --validate`. It performs the normal
+tenant/account sign-in and then checks the selected tenant, subscription, Azure and Foundry token
+audiences, required resource-provider registrations, optional region, Bicep support, and `azd`
+authentication without creating Azure resources or assigning roles. Microsoft 365 licensing,
+blueprint approval, hiring scope, and workload readiness remain portal checks and are reported as
+such rather than guessed by the script.
+
 See [ADVANCED_TENANT_DEPLOYMENT.md](ADVANCED_TENANT_DEPLOYMENT.md) for the resources and required
 administrator privileges. `new-version.sh` remains the update command for an existing serving
 agent.

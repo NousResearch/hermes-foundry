@@ -8,12 +8,14 @@ PROVISION_MODE="apply"
 case "${1:-}" in
   "") ;;
   --preview) PROVISION_MODE="preview" ;;
+  --validate) PROVISION_MODE="validate" ;;
   --auth-only) PROVISION_MODE="auth-only" ;;
   -h|--help)
     printf '%s\n' \
-      "Usage: ./setup.sh [--preview|--auth-only]" \
+      "Usage: ./setup.sh [--preview|--validate|--auth-only]" \
       "  no option    Authenticate, provision Azure, build Hermes, and submit the private request." \
       "  --preview    Show the Azure resource plan without creating anything." \
+      "  --validate   Authenticate and run read-only Azure prerequisites; create no resources." \
       "  --auth-only  Install tools and authenticate without running azd provisioning."
     exit 0
     ;;
@@ -322,13 +324,26 @@ main() {
   ensure_azure_login
   select_customer_subscription
   ensure_azd_login
-  prepare_azd_environment
 
   export AZURE_TENANT_ID="$CUSTOMER_TENANT_ID"
   export AZURE_SUBSCRIPTION_ID
   export AZD_SKIP_FIRST_RUN=true
 
   info "Authentication is ready for tenant ${CUSTOMER_TENANT_ID}."
+
+  if [[ "$PROVISION_MODE" == "validate" ]]; then
+    validate_args=(
+      --tenant "$CUSTOMER_TENANT_ID"
+      --subscription "$AZURE_SUBSCRIPTION_ID"
+    )
+    if [[ -n "${AZURE_LOCATION:-}" ]]; then
+      validate_args+=(--location "$AZURE_LOCATION")
+    fi
+    "${SCRIPT_DIR}/scripts/validate-installation.sh" "${validate_args[@]}"
+    return
+  fi
+
+  prepare_azd_environment
 
   if [[ "$PROVISION_MODE" == "auth-only" ]]; then
     printf 'Authentication-only setup is complete. No Azure resources were changed.\n'

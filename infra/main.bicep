@@ -36,10 +36,7 @@ var uniqueSuffix = uniqueString(subscription().subscriptionId, resourceGroup().i
 var accountName = 'hermes${uniqueSuffix}ai'
 var projectName = 'hermes-${uniqueSuffix}-project'
 var registryName = 'hermes${uniqueSuffix}acr'
-// Keep the user-facing publication name stable while giving this corrected hosted agent a new
-// technical name. The previous proof-of-concept agent was created without an explicit MAIB and is
-// deliberately left untouched for forensic comparison.
-var agentName = 'hermes-agent-on-foundry-v2'
+var agentName = 'hermes-agent-on-foundry'
 var blueprintName = '${agentName}-maib'
 var botName = 'hermes-${uniqueSuffix}-bot'
 
