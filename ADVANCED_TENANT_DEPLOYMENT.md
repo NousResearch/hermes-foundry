@@ -389,6 +389,21 @@ OneDrive provisioning has completed.
 
 ## Step 11: validate the installation
 
+Before the user-facing checks, validate the deployed control-plane objects without changing them:
+
+```bash
+./scripts/validate-deployment.sh \
+  --account "<foundry-account>" \
+  --project "<foundry-project>" \
+  --agent "hermes-agent-on-foundry" \
+  --bot-service-id "<Azure Bot Service resource ID>"
+```
+
+The validator checks the 100% serving route, Activity and Responses protocols,
+`BotServiceTenant`, immutable image digest, required runtime setting names, `HermesRouter` mode,
+managed Agent Identity blueprint, Graph inheritable scopes, and optional Bot Service binding. It
+does not print environment values and performs no writes.
+
 Start a new Teams chat with the new instance and test in this order:
 
 1. Ask it to report its own Microsoft 365 identity.
