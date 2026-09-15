@@ -6,9 +6,14 @@ from __future__ import annotations
 import pathlib
 import sys
 import unittest
+import warnings
 
 
 def main() -> int:
+    # Leaked HTTP/file handles usually appear only when their object is finalized. Treat those
+    # warnings as release failures so retry/error-path regressions cannot quietly accumulate
+    # descriptors in a long-lived hosted session.
+    warnings.simplefilter("error", ResourceWarning)
     root = pathlib.Path(__file__).resolve().parents[1]
     suite = unittest.defaultTestLoader.discover(str(root / "tests"))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
@@ -22,4 +27,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

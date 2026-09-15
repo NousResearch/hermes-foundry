@@ -349,11 +349,12 @@ security boundaries, cost, and removal.
 Run the committed Python tests from the repository root:
 
 ```bash
-python3 -m unittest discover -s tests -p 'test_*.py'
+python3 -W error::ResourceWarning -m unittest discover -s tests -p 'test_*.py'
 ```
 
-Build-time guards also verify that the sidecar imports, its required MCP tools register, and the
-.NET runtime is executable in the final image.
+Release CI additionally rejects skipped tests after installing the production document libraries.
+Build-time guards verify that the sidecar imports, its required MCP tools register, and the .NET
+runtime is executable in the final image.
 
 ## Security notes
 
