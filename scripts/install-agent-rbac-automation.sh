@@ -68,7 +68,25 @@ command -v az >/dev/null || { echo "Azure CLI (az) is required" >&2; exit 2; }
 command -v python3 >/dev/null || { echo "Python 3 is required" >&2; exit 2; }
 az account show >/dev/null
 
-if [[ "$(az provider show --namespace Microsoft.Logic --query registrationState -o tsv)" != "Registered" ]]; then
+[[ "$ACCOUNT" =~ ^[A-Za-z0-9][A-Za-z0-9-]{1,62}[A-Za-z0-9]$ ]] || {
+  echo "Unsafe Foundry account name" >&2; exit 2;
+}
+[[ "$PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{1,126}[A-Za-z0-9]$ ]] || {
+  echo "Unsafe Foundry project name" >&2; exit 2;
+}
+[[ "$BLUEPRINT_CLIENT_ID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || {
+  echo "Blueprint client ID must be a GUID" >&2; exit 2;
+}
+[[ "$WORKFLOW_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,78}[A-Za-z0-9]$ ]] || {
+  echo "Unsafe Logic App workflow name" >&2; exit 2;
+}
+
+if ! logic_provider_state=$(az provider show \
+    --namespace Microsoft.Logic --query registrationState -o tsv); then
+  echo "ERROR: Microsoft.Logic registration state could not be read; nothing was changed." >&2
+  exit 1
+fi
+if [[ "$logic_provider_state" != "Registered" ]]; then
   echo "Registering the Microsoft.Logic resource provider for this subscription..."
   az provider register --namespace Microsoft.Logic --wait
 fi
@@ -80,6 +98,13 @@ FOUNDRY_USER_ROLE_ID="53ca6127-db72-4b80-b1b0-d745d6d5456d"
 RBAC_ADMIN_ROLE_ID="f58310d9-a9f6-439a-9e8d-f62e7b41a168"
 GRAPH_APP_ID="00000003-0000-0000-c000-000000000000"
 GRAPH_AGENT_READ_ROLE_VALUE="AgentIdentity.Read.All"
+WORK=$(mktemp -d /tmp/hermes-rbac-install.XXXXXX)
+cleanup() {
+  case "$WORK" in
+    /tmp/hermes-rbac-install.*) find "$WORK" -depth -delete 2>/dev/null || true ;;
+  esac
+}
+trap cleanup EXIT
 
 az resource show --ids "$PROJECT_SCOPE" >/dev/null
 
@@ -87,16 +112,81 @@ if [[ -z "$LOCATION" ]]; then
   LOCATION=$(az group show --name "$RESOURCE_GROUP" --query location -o tsv)
 fi
 
-if [[ "$INCLUDE_EXISTING" == "true" ]]; then
-  NOT_BEFORE="1970-01-01T00:00:00Z"
-elif EXISTING_NOT_BEFORE=$(az resource show --ids "$WORKFLOW_ID" \
-  --query properties.parameters.notBefore.value -o tsv 2>/dev/null) \
-  && [[ -n "$EXISTING_NOT_BEFORE" ]]; then
-  # Preserve the first installation boundary on an idempotent rerun. Moving it to "now" could
-  # silently skip an identity created while permissions were still propagating.
-  NOT_BEFORE="$EXISTING_NOT_BEFORE"
+if ! az resource list \
+    --resource-group "$RESOURCE_GROUP" \
+    --resource-type Microsoft.Logic/workflows \
+    --output json > "$WORK/workflows.json"; then
+  echo "ERROR: existing Logic Apps could not be listed. Nothing was deployed or changed." >&2
+  exit 1
+fi
+
+EXISTING_WORKFLOW_ID=$(python3 - "$WORK/workflows.json" "$WORKFLOW_NAME" <<'PY'
+import json, sys
+items = json.load(open(sys.argv[1]))
+target = sys.argv[2].casefold()
+matches = [
+    str(item.get("id") or "")
+    for item in items
+    if str(item.get("name") or "").casefold() == target
+]
+if len(matches) > 1 or any(not item for item in matches):
+    raise SystemExit("ERROR: Logic App discovery returned an ambiguous target")
+print(matches[0] if matches else "")
+PY
+)
+
+if [[ -n "$EXISTING_WORKFLOW_ID" ]]; then
+  existing_workflow_id_lower=$(printf '%s' "$EXISTING_WORKFLOW_ID" | tr '[:upper:]' '[:lower:]')
+  expected_workflow_id_lower=$(printf '%s' "$WORKFLOW_ID" | tr '[:upper:]' '[:lower:]')
+  [[ "$existing_workflow_id_lower" == "$expected_workflow_id_lower" ]] || {
+    echo "ERROR: the existing Logic App resolved to an unexpected Azure resource ID." >&2
+    exit 1
+  }
+  if ! az resource show --ids "$EXISTING_WORKFLOW_ID" --output json > "$WORK/workflow.json"; then
+    echo "ERROR: the existing Logic App could not be read. Nothing was deployed or changed." >&2
+    exit 1
+  fi
+  EXISTING_NOT_BEFORE=$(python3 - "$WORK/workflow.json" \
+    "$PROJECT_SCOPE" "$BLUEPRINT_CLIENT_ID" "$FOUNDRY_USER_ROLE_ID" <<'PY'
+import datetime, json, sys
+data = json.load(open(sys.argv[1]))
+expected_project, expected_blueprint, expected_role = sys.argv[2:]
+parameters = (data.get("properties") or {}).get("parameters") or {}
+def value(name):
+    item = parameters.get(name) or {}
+    return str(item.get("value") or "")
+identity_type = str((data.get("identity") or {}).get("type") or "")
+if "SystemAssigned" not in identity_type.split(","):
+    raise SystemExit("ERROR: existing Logic App does not use the expected system-assigned identity")
+if value("projectScope").lower() != expected_project.lower():
+    raise SystemExit("ERROR: existing Logic App targets a different Foundry project")
+if value("blueprintClientId").lower() != expected_blueprint.lower():
+    raise SystemExit("ERROR: existing Logic App targets a different Agent Identity Blueprint")
+if value("foundryUserRoleId").lower() != expected_role.lower():
+    raise SystemExit("ERROR: existing Logic App targets an unexpected Azure role")
+not_before = value("notBefore")
+try:
+    parsed_not_before = datetime.datetime.fromisoformat(not_before.replace("Z", "+00:00"))
+except ValueError:
+    raise SystemExit("ERROR: existing Logic App has no valid identity cutoff")
+if parsed_not_before.tzinfo is None:
+    raise SystemExit("ERROR: existing Logic App identity cutoff has no time zone")
+print(not_before)
+PY
+  )
+  if [[ "$INCLUDE_EXISTING" == "true" ]]; then
+    NOT_BEFORE="1970-01-01T00:00:00Z"
+  else
+    # Preserve the first installation boundary on an idempotent rerun. Moving it to "now" could
+    # silently skip an identity created while permissions were still propagating.
+    NOT_BEFORE="$EXISTING_NOT_BEFORE"
+  fi
 else
-  NOT_BEFORE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  if [[ "$INCLUDE_EXISTING" == "true" ]]; then
+    NOT_BEFORE="1970-01-01T00:00:00Z"
+  else
+    NOT_BEFORE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  fi
 fi
 
 echo "Deploying $WORKFLOW_NAME in $RESOURCE_GROUP (poll interval: ${POLL_MINUTES}m)"

@@ -10,9 +10,21 @@ providers=(
   Microsoft.ContainerRegistry
   Microsoft.Logic
 )
+states=()
 
 for provider in "${providers[@]}"; do
-  state=$(az provider show --namespace "$provider" --query registrationState --output tsv 2>/dev/null || true)
+  if ! state=$(az provider show \
+      --namespace "$provider" --query registrationState --output tsv); then
+    printf 'ERROR: could not read the registration state for %s; no providers were registered.\n' \
+      "$provider" >&2
+    exit 1
+  fi
+  states+=("$state")
+done
+
+for index in "${!providers[@]}"; do
+  provider="${providers[$index]}"
+  state="${states[$index]}"
   if [[ "$state" == "Registered" ]]; then
     printf '%s is already registered.\n' "$provider"
     continue

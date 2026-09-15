@@ -12,7 +12,7 @@ SUBSCRIPTION = "22222222-2222-2222-2222-222222222222"
 
 
 class ResourceProviderHookTests(unittest.TestCase):
-    def run_hook(self, mode):
+    def run_hook(self, mode, failed_provider=""):
         with tempfile.TemporaryDirectory() as directory:
             temp = pathlib.Path(directory)
             calls = temp / "calls.log"
@@ -22,7 +22,9 @@ class ResourceProviderHookTests(unittest.TestCase):
                 printf 'az %s\\n' "$*" >> "$CALL_LOG"
                 case "$*" in
                   account\\ set*) exit 0 ;;
-                  provider\\ show*) printf '%s\\n' NotRegistered ;;
+                  provider\\ show*)
+                    if [[ -n "$FAILED_PROVIDER" && "$*" == *"$FAILED_PROVIDER"* ]]; then exit 3; fi
+                    printf '%s\\n' NotRegistered ;;
                   provider\\ register*) exit 0 ;;
                   *) printf 'unexpected az call: %s\\n' "$*" >&2; exit 9 ;;
                 esac
@@ -34,6 +36,7 @@ class ResourceProviderHookTests(unittest.TestCase):
                 "CALL_LOG": str(calls),
                 "AZURE_SUBSCRIPTION_ID": SUBSCRIPTION,
                 "HERMES_PROVISION_MODE": mode,
+                "FAILED_PROVIDER": failed_provider,
             })
             result = subprocess.run(
                 ["bash", str(ROOT / "scripts/azd-register-resource-providers.sh")],
@@ -56,6 +59,13 @@ class ResourceProviderHookTests(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(3, calls.count("provider register"))
+
+    def test_apply_does_not_register_any_provider_if_state_cannot_be_read(self):
+        result, calls = self.run_hook("apply", failed_provider="Microsoft.ContainerRegistry")
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("could not read the registration state", result.stderr)
+        self.assertNotIn("provider register", calls)
 
 
 if __name__ == "__main__":

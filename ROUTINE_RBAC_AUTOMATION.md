@@ -124,9 +124,12 @@ Optional parameters:
 - `--include-existing` also reconciles Agent Identities created before installation. Without this
   explicit flag, existing identities are never modified.
 
-The script is idempotent. Re-running it preserves the original creation-time cutoff and verifies
-that the existing RBAC delegation still has the exact restrictive condition. It aborts rather than
-silently accepting or replacing a broader delegation.
+The script is idempotent. Before a re-run deploys anything, it lists the resource group's Logic
+Apps and verifies that a same-named workflow has the expected system identity, Foundry project,
+blueprint, Foundry User role, and valid original creation-time cutoff. An unreadable or mismatched
+workflow stops the installation. The script also verifies that the existing RBAC delegation still
+has the exact restrictive condition. It aborts rather than silently accepting or replacing another
+workflow or a broader delegation.
 
 An initial Logic App run can return Graph 403 while the new application permission propagates.
 Later scheduled runs retry automatically. In the validated deployment, the permission propagated
