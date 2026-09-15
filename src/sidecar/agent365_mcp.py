@@ -24,7 +24,9 @@ import datetime
 import email.utils
 import functools
 import inspect
+import ipaddress
 import os
+import socket
 import threading
 import time
 import urllib.error
@@ -448,6 +450,44 @@ def _graph_url(path: str) -> str:
             raise ValueError("absolute Graph URLs must use https://graph.microsoft.com/v1.0")
         return value
     return f"{GRAPH}/{value.lstrip('/')}"
+
+
+def _public_https_url(url: str) -> str:
+    """Validate one outbound web target, resolving DNS before any request is sent."""
+    value = (url or "").strip()
+    if not value or any(ord(char) < 32 for char in value) or "\\" in value:
+        raise ValueError("URL is empty or contains invalid characters")
+    parsed = urllib.parse.urlsplit(value)
+    if (parsed.scheme.lower() != "https" or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None
+            or parsed.port not in (None, 443)):
+        raise ValueError("URL must be public HTTPS on the default port")
+
+    try:
+        addresses = {
+            item[4][0]
+            for item in socket.getaddrinfo(parsed.hostname, 443, type=socket.SOCK_STREAM)
+        }
+    except socket.gaierror as e:
+        raise ValueError("host could not be resolved") from e
+    if not addresses:
+        raise ValueError("host resolved to no addresses")
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(address.split("%", 1)[0])
+        except ValueError as e:
+            raise ValueError("host resolved to an invalid address") from e
+        if not ip.is_global:
+            raise ValueError("host resolves to a private, local, or reserved address")
+    return value
+
+
+class _PublicHttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reapply the network boundary after every redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _public_https_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _retry_delay(headers, attempt: int, cap_seconds: float = 20) -> float:
@@ -2274,8 +2314,10 @@ async def browse_url(url: str, max_chars: int = 20000) -> str:
     Costs ~$0.01 per browser-minute, billed by the second, against fetch_url's zero. Prefer
     fetch_url; reach for this when a page comes back empty or blocked.
     """
-    if not url or not url.lower().startswith(("http://", "https://")):
-        return "ERROR: url must start with http:// or https://"
+    try:
+        url = _public_https_url(url)
+    except ValueError as e:
+        return f"ERROR: refusing browser target: {e}."
     try:
         from playwright.async_api import async_playwright
     except ImportError:
@@ -2481,8 +2523,10 @@ async def screenshot_url(url: str, full_page: bool = False,
     Same hosted browser as browse_url (Azure Playwright Workspaces over CDP), so it costs about the
     same and the same setup applies.
     """
-    if not url or not url.lower().startswith(("http://", "https://")):
-        return "ERROR: url must start with http:// or https://"
+    try:
+        url = _public_https_url(url)
+    except ValueError as e:
+        return f"ERROR: refusing browser target: {e}."
     try:
         from playwright.async_api import async_playwright
     except ImportError:
@@ -2586,13 +2630,10 @@ def fetch_url(url: str, max_chars: int = 20000) -> str:
     of the internal network -- the agent holds a real M365 token and unrestricted egress, and a
     general-purpose fetcher is exactly how that becomes an exfiltration path.
     """
-    if not url or not url.lower().startswith("https://"):
-        return "ERROR: url must start with https://"
-    host = urllib.parse.urlparse(url).hostname or ""
-    if (host in ("localhost", "metadata.google.internal")
-            or host.startswith(("127.", "10.", "192.168.", "169.254.", "172.1", "172.2", "172.3"))
-            or host.endswith((".internal", ".local"))):
-        return "ERROR: refusing to fetch a private or link-local address."
+    try:
+        url = _public_https_url(url)
+    except ValueError as e:
+        return f"ERROR: refusing to fetch non-public URL: {e}."
     try:
         # A UA that announces itself as a bot ("M365AgentBot/1.0") is refused outright by the CDNs in
         # front of most consumer sites -- allrecipes.com returned 403 to it while serving the same page
@@ -2604,7 +2645,8 @@ def fetch_url(url: str, max_chars: int = 20000) -> str:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
         })
-        with urllib.request.urlopen(req, timeout=45) as r:
+        opener = urllib.request.build_opener(_PublicHttpsRedirectHandler)
+        with opener.open(req, timeout=45) as r:
             ctype = (r.headers.get("Content-Type") or "").lower()
             raw = r.read(4 * 1024 * 1024)
     except urllib.error.HTTPError as e:
