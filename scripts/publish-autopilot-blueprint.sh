@@ -139,7 +139,10 @@ if $DRY_RUN; then
 fi
 
 TOKEN=$(az account get-access-token --resource "$RESOURCE" --query accessToken -o tsv)
+set +e
 HTTP_STATUS=$(curl --silent --show-error \
+  --connect-timeout 15 \
+  --max-time 300 \
   --output "$WORK/response.json" \
   --write-out '%{http_code}' \
   --request POST \
@@ -147,14 +150,37 @@ HTTP_STATUS=$(curl --silent --show-error \
   --header "Authorization: Bearer ${TOKEN}" \
   --header "Content-Type: application/json" \
   --data-binary "@$WORK/request.json")
+CURL_STATUS=$?
+set -e
+
+if [[ "$CURL_STATUS" -ne 0 ]]; then
+  echo "ERROR: the Foundry publication request had a transport failure, so its outcome may be unknown." >&2
+  echo "Check the Microsoft 365 pending-agent requests before rerunning this publication version." >&2
+  exit 1
+fi
+[[ "$HTTP_STATUS" =~ ^[0-9]{3}$ ]] || {
+  echo "ERROR: Foundry publication returned no valid HTTP status; do not assume it succeeded." >&2
+  exit 1
+}
 
 if [[ "$HTTP_STATUS" != 2* ]]; then
-  if grep -qi 'version already exists' "$WORK/response.json"; then
-    echo "Publication version ${APP_VERSION} already exists; preserving it."
+  if python3 - "$WORK/response.json" <<'PY'
+import json, sys
+try:
+    payload = json.load(open(sys.argv[1]))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+error = payload.get("error") if isinstance(payload, dict) else None
+code = str((error or {}).get("code") or "") if isinstance(error, dict) else ""
+message = str((error or {}).get("message") or "") if isinstance(error, dict) else ""
+raise SystemExit(0 if code == "UserError" and "version already exists" in message.lower() else 1)
+PY
+  then
+    echo "Publication version ${APP_VERSION} already exists; the existing request was left unchanged."
     exit 0
   fi
   echo "ERROR: Foundry publication returned HTTP ${HTTP_STATUS}." >&2
-  sed -n '1,20p' "$WORK/response.json" >&2
+  echo "The response body was withheld because it can contain tenant and request identifiers." >&2
   exit 1
 fi
 

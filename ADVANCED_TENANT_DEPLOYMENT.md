@@ -313,6 +313,13 @@ request pending for an administrator. It does not accept preview terms, grant Gr
 a hiring scope, activate the blueprint, create an Agent User, consume an Autopilot seat, or create
 Azure role assignments.
 
+The publish call is non-idempotent when its response is lost. On a transport failure, the script
+does not replay the request; it reports an uncertain outcome and tells the operator to inspect the
+pending-agent requests before rerunning the same version. A structured `UserError` saying that the
+version already exists is the only duplicate treated as an idempotent result. Other response bodies
+are retained only in the temporary working directory and are not printed because they can contain
+tenant and request identifiers.
+
 Reference: [Foundry Autopilot publish API](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/agent-365#the-publish-api).
 
 Stop here when separating developer preparation from tenant onboarding. The tenant administrator
