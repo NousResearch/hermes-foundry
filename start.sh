@@ -170,16 +170,52 @@ log "config sanity: $(head -c 120 "$HERMES_STATE/.hermes/config.yaml" | tr '\n' 
 # Respawn wrapper. Output goes to the container's STDOUT, prefixed — redirecting to files hid the
 # edge's bind exception from :logstream for several deploy cycles, and :logstream is the only view
 # into a hosted-agent sandbox.
+SUPERVISOR_PIDS=()
+AUXILIARY_PIDS=()
+
 supervise() {
   local name="$1"; shift
-  ( while true; do
+  (
+    child_pid=""
+    stop_supervisor() {
+      trap - TERM INT
+      if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
+        kill -TERM "$child_pid" 2>/dev/null || true
+        wait "$child_pid" 2>/dev/null || true
+      fi
+      exit 0
+    }
+    trap stop_supervisor TERM INT
+
+    while true; do
       log "starting $name"
-      "$@" 2>&1 | sed -u "s/^/[$name] /"
-      log "$name exited rc=$? — restarting in 3s"
+      "$@" > >(sed -u "s/^/[$name] /") 2>&1 &
+      child_pid=$!
+      wait "$child_pid"
+      rc=$?
+      child_pid=""
+      log "$name exited rc=$rc — restarting in 3s"
       log "$name listeners: $( (ss -lntp 2>/dev/null || echo 'no ss') | tr '\n' ' ' | cut -c1-350)"
       sleep 3
-    done ) &
+    done
+  ) &
+  SUPERVISOR_PIDS+=("$!")
 }
+
+shutdown() {
+  trap - TERM INT
+  log "shutdown requested — stopping child processes"
+  for pid in "${AUXILIARY_PIDS[@]}" "${SUPERVISOR_PIDS[@]}"; do
+    [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null || true
+  done
+  for pid in "${SUPERVISOR_PIDS[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+  log "all supervised processes stopped"
+  exit 0
+}
+
+trap shutdown TERM INT
 
 # ⚠️ PORT=8088 is injected by the platform — it is the port the AGENT must serve on, and the agent
 # is the edge. edge-gateway/app.py reads os.environ["PORT"], so in a single container it grabbed
@@ -222,22 +258,19 @@ done
 # "Fly Machines, docker run --init, some Nomad/K8s setups", which is exactly this runtime. It also
 # exports PATH=/command:/package/admin/s6/command — calling the wrapper directly failed with
 # "exec: s6-setuidgid: not found" because s6's helpers are not on the image PATH.
-log "starting Hermes in background via entrypoint-dispatch.sh"
-( while true; do
-    /opt/hermes/docker/entrypoint-dispatch.sh gateway run 2>&1 | tee -a /tmp/hermes.log | sed -u 's/^/[hermes] /'
-    log "hermes exited rc=$? — restarting in 3s"
-    sleep 3
-  done ) &
+supervise hermes /opt/hermes/docker/entrypoint-dispatch.sh gateway run
 
 # Report, never block — these make cold start measurable without delaying readiness.
 ( for i in $(seq 1 120); do
     ss -lntp 2>/dev/null | grep -q ':8088 .*dotnet' && { log "edge owns :8088 after ${i}s — READY"; exit 0; }
     sleep 1
   done; log "WARNING: edge never bound :8088 — /readiness will fail" ) &
+AUXILIARY_PIDS+=("$!")
 
 ( for i in $(seq 1 300); do
     (echo > /dev/tcp/127.0.0.1/8642) >/dev/null 2>&1 && { log "hermes API up on :8642 after ${i}s"; exit 0; }
     sleep 1
   done; log "WARNING: hermes never bound :8642 in 300s — gateway will 502 after HERMES_COLD_START_WAIT" ) &
+AUXILIARY_PIDS+=("$!")
 
 while true; do sleep 3600; done
