@@ -220,7 +220,11 @@ public sealed class HermesResponseHandler(
             try
             {
                 var http = httpFactory.CreateClient();
-                var session = Environment.GetEnvironmentVariable("FOUNDRY_AGENT_SESSION_ID") ?? "(unset)";
+                var session = Environment.GetEnvironmentVariable("FOUNDRY_AGENT_SESSION_ID") ?? "";
+                var sessionTag = string.IsNullOrWhiteSpace(session)
+                    ? "none"
+                    : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                        Encoding.UTF8.GetBytes(session))).ToLowerInvariant()[..12];
                 using var req = new HttpRequestMessage(HttpMethod.Post, $"{_routerUrl}/v1/edge-log")
                 {
                     Content = new StringContent(
@@ -228,7 +232,7 @@ public sealed class HermesResponseHandler(
                         {
                             stage,
                             detail,
-                            session,
+                            session_tag = sessionTag,
                             correlation = CurrentCorrelationId()
                         }),
                         Encoding.UTF8, "application/json")

@@ -462,8 +462,10 @@ class Handler(BaseHTTPRequestHandler):
                 d = json.loads(raw or b"{}")
             except Exception:
                 d = {"stage": "unparseable", "detail": f"bytes={len(raw)}"}
-            session = str(d.get("session") or "")
-            session_tag = hashlib.sha256(session.encode()).hexdigest()[:12] if session else "none"
+            supplied_session_tag = str(d.get("session_tag") or "")
+            session_tag = (supplied_session_tag
+                           if re.fullmatch(r"[a-f0-9]{12}", supplied_session_tag)
+                           else "none")
             correlation = str(d.get("correlation") or "")
             suffix = (f" | correlation={correlation}"
                       if _CORRELATION.fullmatch(correlation) else "")
@@ -481,7 +483,7 @@ class Handler(BaseHTTPRequestHandler):
                 path, mime = str(d["path"]), str(d.get("mime") or "application/octet-stream")
                 name = str(d.get("name") or os.path.basename(path))
             except Exception as e:
-                log(f"[edge] attach.bad | {type(e).__name__}: {e}")
+                log(f"[edge] attach.bad | type={type(e).__name__}")
                 self._send(400, b'{"error":"path required"}')
                 return
             # Only ever accept a path inside the outbox. The sidecar is ours, but this endpoint would
@@ -489,7 +491,7 @@ class Handler(BaseHTTPRequestHandler):
             # edge upload it to a chat — /etc/shadow included. Resolve first so ../ cannot escape.
             real, root = os.path.realpath(path), os.path.realpath(OUTBOX)
             if not (real == root or real.startswith(root + os.sep)) or not os.path.isfile(real):
-                log(f"[edge] attach.rejected | outside {OUTBOX} or missing")
+                log("[edge] attach.rejected | path outside outbox or missing")
                 self._send(400, b'{"error":"path must be an existing file in the outbox"}')
                 return
             with _attachments_lock:

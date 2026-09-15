@@ -24,6 +24,9 @@ class EdgePrivacyContractTests(unittest.TestCase):
         self.assertNotIn("traceback.print_exc", source)
         self.assertNotIn("[web_search] query={", source)
         self.assertNotIn('-> {path}', source)
+        self.assertNotIn("{str(exc)[:300]}", source)
+        self.assertNotIn('"session": os.environ.get("FOUNDRY_AGENT_SESSION_ID"', source)
+        self.assertIn('"session_tag": session_tag', source)
 
     def test_anonymous_bot_channels_are_not_treated_as_tenant_colleagues(self):
         source = (
@@ -48,11 +51,35 @@ class EdgePrivacyContractTests(unittest.TestCase):
 
     def test_foundry_telemetry_does_not_export_genai_content_or_connection_strings(self):
         source = (ROOT / "src/edge/Program.cs").read_text()
+        router = (
+            ROOT / "src/edge/AgentLogic/HermesRouter/HermesRouterAgentLogicService.cs"
+        ).read_text()
+        routine = (
+            ROOT / "src/edge/AgentLogic/ResponsesProtocol/HermesResponseHandler.cs"
+        ).read_text()
         self.assertIn(
             'SetSwitch("Azure.Experimental.TraceGenAIMessageContent", false)', source
         )
         self.assertNotIn('AI ConnectionString:', source)
         self.assertNotIn('Azure Key Vault configured: {keyVaultUri}', source)
+        self.assertNotIn('serviceUrl={G("serviceUrl")}', source)
+        self.assertNotIn("                    session,", source)
+        self.assertIn("session_tag = sessionTag", source)
+        self.assertNotIn("                    session,", router)
+        self.assertNotIn("                            session,", routine)
+        self.assertIn("session_tag = sessionTag", router)
+        self.assertIn("session_tag = sessionTag", routine)
+
+    def test_attachment_and_progress_failures_do_not_log_exception_messages(self):
+        edge = (
+            ROOT / "src/edge/AgentLogic/HermesRouter/HermesRouterAgentLogicService.cs"
+        ).read_text()
+        gateway = (ROOT / "src/gateway/app.py").read_text()
+        self.assertNotIn('upEx.Message', edge)
+        self.assertNotIn('$"attempt={progress.FailedUpdates} {ex.GetType().Name}: {ex.Message}"', edge)
+        self.assertNotIn('head.Substring', edge)
+        self.assertNotIn('attach.bad | {type(e).__name__}: {e}', gateway)
+        self.assertNotIn('outside {OUTBOX}', gateway)
 
     def test_compatibility_mode_logs_no_agent_ids_or_service_response_bodies(self):
         factory = (

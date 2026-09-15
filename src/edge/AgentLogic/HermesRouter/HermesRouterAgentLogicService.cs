@@ -1043,7 +1043,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         {
             progress.FailedUpdates++;
             EdgeLog("progress.update.failed",
-                $"attempt={progress.FailedUpdates} {ex.GetType().Name}: {ex.Message}");
+                $"attempt={progress.FailedUpdates} type={ex.GetType().Name}");
         }
     }
 
@@ -1223,7 +1223,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                 }
                 catch (Exception upEx)
                 {
-                    EdgeLog("attach.upload.failed", $"{upEx.GetType().Name}: {upEx.Message} — trying inline");
+                    EdgeLog("attach.upload.failed",
+                        $"type={upEx.GetType().Name} fallback=inline");
                     built = new Attachment
                     {
                         Name = a.Name,
@@ -1585,19 +1586,19 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         {
             try
             {
-                // Carry the hosted-agent session id on every report. It is the key to the ONLY way
-                // to read this container's logs — the sample's documented log-stream endpoint:
-                //   GET {account}.services.ai.azure.com/api/projects/{proj}/agents/{agent}
-                //       /sessions/{session}:logstream?api-version=2025-11-15-preview
-                //   Foundry-Features: HostedAgents=V1Preview
-                // Otherwise the id only surfaces inside an error message, so a failure that does not
-                // reach our code (inbound email, for instance) leaves nothing to stream.
-                var session = Environment.GetEnvironmentVariable("FOUNDRY_AGENT_SESSION_ID") ?? "(unset)";
+                // Preserve cross-process correlation without exporting the hosted session ID. The
+                // session belongs to platform control-plane state and is not required in clear text
+                // for application health or turn diagnostics.
+                var session = Environment.GetEnvironmentVariable("FOUNDRY_AGENT_SESSION_ID") ?? "";
+                var sessionTag = string.IsNullOrWhiteSpace(session)
+                    ? "none"
+                    : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(session)))
+                        .ToLowerInvariant()[..12];
                 var payload = JsonSerializer.Serialize(new
                 {
                     stage,
                     detail,
-                    session,
+                    session_tag = sessionTag,
                     correlation = CurrentCorrelationId()
                 });
                 using var req = new HttpRequestMessage(HttpMethod.Post, $"{_routerUrl}/v1/edge-log")
@@ -2004,9 +2005,10 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             var json = await res.Content.ReadAsStringAsync();
             if (!res.IsSuccessStatusCode)
             {
-                var head = json ?? "";
-                EdgeLog("email.sender.graph.error",
-                        $"{(int)res.StatusCode} {head.Substring(0, Math.Min(240, head.Length))}");
+                // Graph error bodies can contain directory identifiers and request metadata. The
+                // status is sufficient to distinguish permission, missing-message, and service
+                // failures without exporting that response body to application telemetry.
+                EdgeLog("email.sender.graph.error", $"status={(int)res.StatusCode}");
                 return null;
             }
             using var doc = System.Text.Json.JsonDocument.Parse(json);

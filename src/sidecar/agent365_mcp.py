@@ -255,8 +255,9 @@ def read_uploaded_file(path: str, max_chars: int = 60000) -> str:
             return "The uploaded file was opened successfully but contained no extractable text."
         _edge_log("upload.read", f"type={ext or '(none)'} chars={len(rendered)}")
         return rendered
-    except Exception as exc:  # noqa: BLE001 - tool failures must be visible to the model
-        return f"ERROR reading uploaded file: {type(exc).__name__}: {str(exc)[:300]}"
+    except Exception as exc:  # noqa: BLE001 - return a stable failure without local parser/path data
+        return (f"ERROR reading uploaded file: {type(exc).__name__}. "
+                "The file was not reviewed.")
 
 
 _token_cache = {"tok": "", "at": 0.0}
@@ -416,8 +417,10 @@ def _edge_log(stage: str, detail: str) -> None:
 
     def _send():
         try:
+            session = os.environ.get("FOUNDRY_AGENT_SESSION_ID", "")
+            session_tag = hashlib.sha256(session.encode()).hexdigest()[:12] if session else "none"
             body = json.dumps({"stage": f"sidecar.{stage}", "detail": detail[:600],
-                               "session": os.environ.get("FOUNDRY_AGENT_SESSION_ID", "(unset)")}).encode()
+                               "session_tag": session_tag}).encode()
             req = urllib.request.Request(f"{_TOKEN_URL}/v1/edge-log", data=body,
                                          headers={"Content-Type": "application/json",
                                                   **({"Authorization": f"Bearer {_TOKEN_KEY}"} if _TOKEN_KEY else {})})

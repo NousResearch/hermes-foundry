@@ -263,8 +263,10 @@ app.MapPost("/api/messages", async (HttpRequest request, HttpResponse response, 
             using var doc = System.Text.Json.JsonDocument.Parse(body);
             var r = doc.RootElement;
             string G(string n) => r.TryGetProperty(n, out var v) ? v.ToString() : "";
+            // Only routing shape belongs in telemetry. serviceUrl can contain a tenant-specific
+            // hostname and contributes nothing to deciding whether the activity reached the edge.
             peek = $"type={G("type")} channelId={G("channelId")} name={G("name")} "
-                 + $"valueType={G("valueType")} serviceUrl={G("serviceUrl")} bytes={body.Length}";
+                 + $"valueType={G("valueType")} bytes={body.Length}";
         }
         catch (Exception pe) { peek = $"unparsed={pe.GetType().Name} bytes={body.Length}"; }
 
@@ -272,13 +274,17 @@ app.MapPost("/api/messages", async (HttpRequest request, HttpResponse response, 
         var routerUrl = (cfg["RouterUrl"] ?? "").TrimEnd('/');
         if (!string.IsNullOrEmpty(routerUrl))
         {
-            var session = Environment.GetEnvironmentVariable("FOUNDRY_AGENT_SESSION_ID") ?? "(unset)";
+            var session = Environment.GetEnvironmentVariable("FOUNDRY_AGENT_SESSION_ID") ?? "";
+            var sessionTag = string.IsNullOrWhiteSpace(session)
+                ? "none"
+                : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                    Encoding.UTF8.GetBytes(session))).ToLowerInvariant()[..12];
             var trace = System.Diagnostics.Activity.Current?.TraceId.ToString();
             var payload = System.Text.Json.JsonSerializer.Serialize(new
             {
                 stage = "http.in",
                 detail = peek,
-                session,
+                session_tag = sessionTag,
                 correlation = string.IsNullOrWhiteSpace(trace) ? Guid.NewGuid().ToString("N") : trace
             });
             using var req = new HttpRequestMessage(HttpMethod.Post, $"{routerUrl}/v1/edge-log")

@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import pathlib
 import threading
@@ -158,6 +159,27 @@ class GatewayPrivacyTests(unittest.TestCase):
 
         self.assertEqual((200, b'{"ok":true}'), sent[0])
         deep.assert_not_called()
+
+    def test_edge_log_accepts_only_prehashed_session_tag(self):
+        handler = object.__new__(self.gateway.Handler)
+        handler.path = "/v1/edge-log"
+        handler._authorised = lambda: True
+        handler._body = lambda: json.dumps({
+            "stage": "test",
+            "detail": "structural",
+            "session": "raw-platform-session",
+            "session_tag": "123456789abc",
+        }).encode()
+        sent = []
+        handler._send = lambda status, body=b"", **kwargs: sent.append(status)
+
+        with mock.patch.object(self.gateway, "log") as log:
+            handler._do_POST()
+
+        self.assertEqual([204], sent)
+        rendered = str(log.call_args)
+        self.assertIn("session_tag=123456789abc", rendered)
+        self.assertNotIn("raw-platform-session", rendered)
 
 
 if __name__ == "__main__":

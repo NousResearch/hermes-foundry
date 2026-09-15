@@ -4,6 +4,7 @@ import io
 import json
 import pathlib
 import sys
+import tempfile
 import types
 import unittest
 import urllib.error
@@ -271,6 +272,55 @@ class GraphOneDriveTests(unittest.TestCase):
         graph.assert_not_called()
         self.assertIn("FILE NOT CHANGED", result)
         self.assertIn("remember", result)
+
+    def test_uploaded_file_reader_accepts_only_current_turn_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            inside = inbox / "notes.txt"
+            outside = root / "private.txt"
+            inside.write_text("current turn content")
+            outside.write_text("must not escape")
+
+            with mock.patch.object(self.m, "_INBOUND_UPLOAD_ROOT", str(inbox.resolve())):
+                accepted = self.m.read_uploaded_file(str(inside))
+                refused = self.m.read_uploaded_file(str(outside))
+
+        self.assertEqual("current turn content", accepted)
+        self.assertIn("ERROR reading uploaded file", refused)
+        self.assertIn("The file was not reviewed", refused)
+        self.assertNotIn(str(outside), refused)
+        self.assertNotIn("must not escape", refused)
+
+    def test_uploaded_file_reader_resolves_symlinks_before_boundary_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            outside = root / "outside.txt"
+            outside.write_text("outside data")
+            link = inbox / "linked.txt"
+            link.symlink_to(outside)
+
+            with mock.patch.object(self.m, "_INBOUND_UPLOAD_ROOT", str(inbox.resolve())):
+                result = self.m.read_uploaded_file(str(link))
+
+        self.assertIn("ERROR reading uploaded file", result)
+        self.assertNotIn("outside data", result)
+
+    def test_uploaded_file_parser_failure_has_stable_non_path_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory)
+            broken = inbox / "broken.docx"
+            broken.write_bytes(b"not an OOXML file")
+
+            with mock.patch.object(self.m, "_INBOUND_UPLOAD_ROOT", str(inbox.resolve())):
+                result = self.m.read_uploaded_file(str(broken))
+
+        self.assertIn("ERROR reading uploaded file", result)
+        self.assertIn("The file was not reviewed", result)
+        self.assertNotIn(str(broken), result)
 
     def test_recall_frames_memory_as_authoritative_owner_data(self):
         with mock.patch.object(self.m, "_graph", return_value="# Shared owner memory\n\nAllowed") as graph:
