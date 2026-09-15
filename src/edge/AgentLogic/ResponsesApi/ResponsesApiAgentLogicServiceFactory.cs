@@ -78,7 +78,7 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
             return LoadFromManifest();
         }
 
-        logger.LogInformation("Discovering MCP servers from API for agent {AgentId}", agentInstanceId);
+        logger.LogInformation("Discovering MCP servers from API for the current agent instance");
         return await DiscoverFromApiAsync(agentInstanceId, accessToken);
     }
 
@@ -116,7 +116,7 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
         }
 
         var servers = JsonSerializer.Deserialize<List<McpServerConfig>>(responseContent) ?? [];
-        logger.LogInformation("Discovered {Count} MCP servers for agent {AgentId}", servers.Count, agentInstanceId);
+        logger.LogInformation("Discovered {Count} MCP servers for the current agent instance", servers.Count);
 
         foreach (var server in servers)
         {

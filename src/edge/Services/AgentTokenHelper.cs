@@ -41,7 +41,8 @@ public class AgentTokenHelper(ILogger<AgentTokenHelper> logger)
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Error acquiring agentic user token");
+            logger.LogError("Error acquiring agentic user token; type={ExceptionType}",
+                ex.GetType().Name);
             throw;
         }
     }

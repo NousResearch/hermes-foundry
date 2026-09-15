@@ -292,7 +292,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         var previousResponseId = LoadPreviousResponseId(conversationId);
         if (previousResponseId != null)
         {
-            _logger.LogInformation("Continuing conversation {ConversationId} with previous_response_id: {PreviousResponseId}", conversationId, previousResponseId);
+            _logger.LogInformation("Continuing an existing Responses API conversation");
         }
 
         var requestBody = new Dictionary<string, object>
@@ -376,7 +376,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to load previous_response_id for conversation {ConversationId}", conversationId);
+            _logger.LogWarning("Failed to load previous_response_id; type={ExceptionType}",
+                ex.GetType().Name);
         }
         return null;
     }
@@ -400,7 +401,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to save response_id for conversation {ConversationId}", conversationId);
+            _logger.LogWarning("Failed to save response_id; type={ExceptionType}",
+                ex.GetType().Name);
         }
     }
 
@@ -449,7 +451,8 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error parsing Responses API response");
+            _logger.LogError("Error parsing Responses API response; type={ExceptionType}",
+                ex.GetType().Name);
             return string.Empty;
         }
     }

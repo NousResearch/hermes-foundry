@@ -26,8 +26,10 @@ sandbox-router once ACA Sandboxes is enabled and nothing on the edge side needs 
 Standard library only, on purpose. No pip install, no lockfile, nothing to audit.
 """
 
+import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -51,9 +53,6 @@ UPSTREAM_TIMEOUT = int(os.environ.get("UPSTREAM_TIMEOUT", "900"))
 # 0 preserves the original fail-fast behaviour for the split ACA deployment, where Hermes is a
 # separate always-on container and "connection refused" really does mean broken.
 HERMES_COLD_START_WAIT = int(os.environ.get("HERMES_COLD_START_WAIT", "0"))
-
-# Where Hermes' stdout is teed, so a 502 can carry its tail (see do_POST). Empty = feature off.
-HERMES_LOG_PATH = os.environ.get("HERMES_LOG_PATH", "/tmp/hermes.log")
 
 # Headers the edge sets that Hermes/the router care about. Forwarded verbatim.
 PASSTHROUGH = (
@@ -138,10 +137,37 @@ def _discard_stale_attachments():
         log(f"[edge] attach.stale.dropped | {len(stale)} file(s) from an earlier turn")
 
 
+_LOG_EMAIL = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
+_LOG_GUID = re.compile(
+    r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+_LOG_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
+_LOG_SECRET_QUERY = re.compile(
+    r"(?i)([?&](?:sig|token|code|key|client_secret|assertion|access_token)=)[^&\s]+")
+_LOG_TENANT_HOST = re.compile(
+    r"(?i)\b[a-z0-9-]+(?:-my\.sharepoint\.com|\.onmicrosoft\.com)\b")
+
+
+def _log_fingerprint(value):
+    """Stable, non-reversible identifier for correlating redacted log events."""
+    return hashlib.sha256(value.group(0).lower().encode()).hexdigest()[:12]
+
+
+def _redact_log_message(message):
+    """Remove user content, tenant names and credentials before stdout/App Insights."""
+    text = str(message)
+    text = _LOG_JWT.sub("<token>", text)
+    text = _LOG_SECRET_QUERY.sub(r"\1<redacted>", text)
+    text = _LOG_EMAIL.sub("<email>", text)
+    text = _LOG_TENANT_HOST.sub("<tenant-host>", text)
+    text = _LOG_GUID.sub(lambda match: f"<id:{_log_fingerprint(match)}>", text)
+    return text
+
+
 def log(*parts):
     # Unbuffered so `az containerapp logs show --follow` is actually live.
-    print(*parts, flush=True)
-    _ship(" ".join(str(p) for p in parts))
+    message = _redact_log_message(" ".join(str(p) for p in parts))
+    print(message, flush=True)
+    _ship(message)
 
 
 # ---- ship our own log lines to Application Insights -------------------------------------------
@@ -461,19 +487,14 @@ class Handler(BaseHTTPRequestHandler):
                             return
 
                         payload = r.read()
-                        # Log WHAT HERMES ACTUALLY ANSWERED. The gateway is the only component that
-                        # sees this body before it is turned into a Teams message, and on 2026-08-17
-                        # the owner's reply was "HTTP 401: Principal does not have access to
-                        # API/Operation." while every layer reported success — because nothing logged
-                        # the answer. Truncated; this is the owner's own content and a diagnostic aid,
-                        # not a transcript store.
+                        # Parse the reply only to classify cold-start failures. Never copy reply text
+                        # into logs: it can contain user content and tool results.
                         try:
                             _p = json.loads(payload)
                             _txt = (_p.get("choices") or [{}])[0].get("message", {}).get("content", "")
                         except Exception:
                             _txt = payload[:400].decode("utf-8", "replace")
-                        log(f"[edge] hermes.reply | status={r.status} | chars={len(_txt or '')} | "
-                            f"preview={(_txt or '')[:300]!r}")
+                        log(f"[edge] hermes.reply | status={r.status} | chars={len(_txt or '')}")
 
                         # COLD-START 401, RETRIED — not passed on as an answer.
                         #
@@ -506,9 +527,13 @@ class Handler(BaseHTTPRequestHandler):
                                    extra_headers=_drain_attachment_headers())
                     return
                 except urllib.error.HTTPError as e:
-                    detail = e.read()[:500].decode("utf-8", "replace")
-                    log(f"[edge] hermes.error | {e.code} | {detail}")
-                    self._send(e.code, json.dumps({"error": detail}).encode())
+                    # Upstream error bodies may contain model output, request details or signed
+                    # URLs. Keep them out of telemetry and return a stable public error instead.
+                    e.read()
+                    log(f"[edge] hermes.error | status={e.code}")
+                    self._send(e.code, json.dumps({
+                        "error": f"Hermes returned HTTP {e.code}."
+                    }).encode())
                     return
                 except Exception as e:
                     if time.monotonic() < deadline:
@@ -518,20 +543,13 @@ class Handler(BaseHTTPRequestHandler):
                                 f"{HERMES_COLD_START_WAIT}s for Hermes to finish booting")
                         time.sleep(2)
                         continue
-                    log(f"[edge] hermes.unreachable | {type(e).__name__}: {e}")
-                    # Include the tail of Hermes' own log in the 502 body. In a Foundry hosted
-                    # sandbox :logstream is the only window in, and sessions go idle before it can
-                    # be attached — so the reply itself has to carry the diagnosis or the failure
-                    # is simply undebuggable from outside.
-                    tail = ""
-                    try:
-                        with open(HERMES_LOG_PATH, "rb") as fh:
-                            fh.seek(0, 2)
-                            fh.seek(max(0, fh.tell() - 4000))
-                            tail = fh.read().decode("utf-8", "replace")[-4000:]
-                    except Exception as read_err:
-                        tail = f"(no hermes log at {HERMES_LOG_PATH}: {read_err})"
-                    self._send(502, json.dumps({"error": str(e), "hermes_log_tail": tail}).encode())
+                    correlation = os.urandom(8).hex()
+                    log(f"[edge] hermes.unreachable | type={type(e).__name__} | "
+                        f"correlation={correlation}")
+                    self._send(502, json.dumps({
+                        "error": "Hermes is temporarily unavailable.",
+                        "correlation": correlation,
+                    }).encode())
                     return
 
         self._send(404, b'{"error":"not found"}')

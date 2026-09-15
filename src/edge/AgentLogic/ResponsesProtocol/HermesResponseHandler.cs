@@ -137,15 +137,13 @@ public sealed class HermesResponseHandler(
         }
         catch (Exception ex)
         {
-            // Log the AADSTS code, not MSAL's paraphrase. The error code and response body identify
-            // whether the blueprint credential, child relationship, or Agent User grant is wrong.
+            // The AADSTS code and status are enough to distinguish configuration failures. MSAL's
+            // message, response body and inner exception may contain assertions or tenant details.
             var msal = ex as Microsoft.Identity.Client.MsalServiceException;
             EdgeLog("token.error",
-                $"responses agent={binding.AgentIdentityId} user={binding.AgentUserId} " +
-                $"{ex.GetType().Name}: {ex.Message} | errorCode={msal?.ErrorCode ?? "(n/a)"} " +
-                $"status={msal?.StatusCode.ToString() ?? "(n/a)"} " +
-                $"| body={(msal?.ResponseBody ?? "").Replace("\n", " ")} " +
-                $"| inner={ex.InnerException?.Message}");
+                $"provider=entra-agent-obo type={ex.GetType().Name} " +
+                $"errorCode={msal?.ErrorCode ?? "(n/a)"} " +
+                $"status={msal?.StatusCode.ToString() ?? "(n/a)"}");
             return "This routine could not acquire its Agent User identity and was not executed.";
         }
 
@@ -178,7 +176,7 @@ public sealed class HermesResponseHandler(
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Responses turn failed");
+            logger.LogError("Responses turn failed; type={ExceptionType}", ex.GetType().Name);
             EdgeLog("responses.err", ex.GetType().Name);
             return "The gateway was unreachable.";
         }

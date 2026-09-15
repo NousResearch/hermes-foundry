@@ -202,7 +202,9 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Could not mint the agent's Graph token; this turn runs without M365 tools");
+            _logger.LogError(
+                "Could not mint the agent's Graph token; type={ExceptionType}; this turn runs without M365 tools",
+                ex.GetType().Name);
             // Same reason as the caller's token.missing: ILogger goes somewhere we cannot read on a
             // hosted agent, so the exception type and message have to leave the container out of band
             // or the failure is undiagnosable from outside.
@@ -798,7 +800,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             // Log it; do NOT mail it. Error bodies were the bulk of the duplicate outbound traffic
             // that triggered the suspicious-sending alert, and a stack trace is useless to a human
             // recipient anyway.
-            _logger.LogError(ex, "Hermes email turn failed");
+            _logger.LogError("Hermes email turn failed; type={ExceptionType}", ex.GetType().Name);
             EdgeLog("email.turn.FAILED", $"{ex.GetType().Name}: {ex.Message}");
             return;
         }
@@ -1093,7 +1095,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Hermes turn failed");
+            _logger.LogError("Hermes turn failed; type={ExceptionType}", ex.GetType().Name);
             reply = $"I couldn't complete that: {ex.GetType().Name}.";
         }
         // The return leg is the hop we could not see. Log the outcome explicitly, including the

@@ -99,7 +99,14 @@ public class A365AgentApplication : AgentApplication
             var streamingStarted = false;
             try
             {
-                _logger.LogInformation("Received message activity: {ActivityId} from {UserId} activity {activity}", turnContext.Activity.Id, turnContext.Activity.From?.Id, System.Text.Json.JsonSerializer.Serialize(turnContext.Activity));
+                // Activity bodies can contain chat text, attachment URLs, identity claims and
+                // channel credentials. Keep operational logs useful without turning telemetry into
+                // a transcript store.
+                _logger.LogInformation(
+                    "Received {ActivityType} activity on {ChannelId}; attachments={AttachmentCount}",
+                    turnContext.Activity.Type,
+                    turnContext.Activity.ChannelId,
+                    turnContext.Activity.Attachments?.Count ?? 0);
                 // Based on the recipient, determine which agent to use
                 var agent = await GetAgentFromRecipient(turnContext.Activity);
 
@@ -152,14 +159,20 @@ public class A365AgentApplication : AgentApplication
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing message activity");
+                var correlationId = System.Diagnostics.Activity.Current?.TraceId.ToString();
+                if (string.IsNullOrWhiteSpace(correlationId))
+                    correlationId = Guid.NewGuid().ToString("N");
+                _logger.LogError(
+                    "Error processing message activity; type={ExceptionType} correlation={CorrelationId}",
+                    ex.GetType().Name,
+                    correlationId);
 
-                var sessionId = Environment.GetEnvironmentVariable("FOUNDRY_AGENT_SESSION_ID");
-                var sessionLine = string.IsNullOrEmpty(sessionId) ? "(not set)" : sessionId;
+                // Never send stack traces, environment values or hosted-session identifiers to
+                // the caller. They can contain tenant topology and credentials. The correlation
+                // value is safe to give support and joins the user-visible error to server logs.
                 var errorText =
-                    $"Sorry, something went wrong while processing your message.{Environment.NewLine}" +
-                    $"FOUNDRY_AGENT_SESSION_ID: {sessionLine}{Environment.NewLine}" +
-                    $"Exception:{Environment.NewLine}{ex}";
+                    $"Sorry, something went wrong while processing your message. " +
+                    $"Reference: {correlationId}.";
 
                 if (streamingStarted)
                 {
@@ -236,9 +249,8 @@ public class A365AgentApplication : AgentApplication
             async (turnContext, turnState, cancellationToken) =>
             {
                 _logger.LogInformation(
-                    "Received membersAdded welcome trigger with {MemberCount} member(s) (activity {ActivityId})",
-                    turnContext.Activity.MembersAdded?.Count ?? 0,
-                    turnContext.Activity.Id);
+                    "Received membersAdded welcome trigger with {MemberCount} member(s)",
+                    turnContext.Activity.MembersAdded?.Count ?? 0);
 
                 var agent = await GetAgentFromRecipient(turnContext.Activity);
                 var agentService = await _factory.CreateAsync(agent, turnContext, UserAuthorization);

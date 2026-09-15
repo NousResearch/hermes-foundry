@@ -246,7 +246,8 @@ public sealed class RoutineBindingService(
         }
         catch (JsonException ex)
         {
-            logger.LogError(ex, "Foundry returned an unreadable routine list");
+            logger.LogError("Foundry returned an unreadable routine list; type={ExceptionType}",
+                ex.GetType().Name);
             return RoutineControlResult.Failure("Foundry returned an unreadable routine list.");
         }
 
@@ -301,8 +302,7 @@ public sealed class RoutineBindingService(
             return RoutineControlResult.Failure(
                 $"Foundry could not remove the routine (HTTP {(int)delete.StatusCode}): {SafeServiceError(deleteBody)}");
 
-        logger.LogInformation("Removed routine {RoutineName} for Agent Identity {AgentIdentityId}",
-            internalName, capability.AgentIdentityId);
+        logger.LogInformation("Removed an instance-bound routine");
         return RoutineControlResult.Success($"Routine '{displayName.Trim()}' was removed.");
     }
 

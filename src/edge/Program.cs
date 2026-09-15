@@ -265,7 +265,7 @@ app.MapPost("/api/messages", async (HttpRequest request, HttpResponse response, 
             peek = $"type={G("type")} channelId={G("channelId")} name={G("name")} "
                  + $"valueType={G("valueType")} serviceUrl={G("serviceUrl")} bytes={body.Length}";
         }
-        catch (Exception pe) { peek = $"(unparsed {pe.GetType().Name}) bytes={body.Length} head={body[..Math.Min(160, body.Length)]}"; }
+        catch (Exception pe) { peek = $"unparsed={pe.GetType().Name} bytes={body.Length}"; }
 
         var cfg = app.Services.GetRequiredService<IConfiguration>();
         var routerUrl = (cfg["RouterUrl"] ?? "").TrimEnd('/');

@@ -27,7 +27,6 @@ import inspect
 import os
 import threading
 import time
-import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -113,14 +112,18 @@ def _logged_tool(*d_args, **d_kwargs):
             ms = int((time.monotonic() - t0) * 1000)
             r = result if isinstance(result, str) else str(result)
             bad = r.lstrip().startswith(("ERROR", "🔴"))
+            # Results can contain document text, recipients, signed download URLs and Graph
+            # diagnostics. The model receives the full result, but telemetry records only outcome
+            # and size.
             print(f"[tool] {name} {'FAILED' if bad else 'ok'} in {ms}ms "
-                  f"({len(r)} chars){' :: ' + r[:300] if bad else ''}", flush=True)
+                  f"({len(r)} chars)", flush=True)
             return result
 
         def _raised(t0, exc):
             ms = int((time.monotonic() - t0) * 1000)
-            print(f"[tool] {name} RAISED in {ms}ms :: {type(exc).__name__}: {exc}", flush=True)
-            traceback.print_exc()
+            # Exception messages and tracebacks from HTTP clients routinely embed URLs, request
+            # bodies and bearer-token metadata. Preserve the failure class without those values.
+            print(f"[tool] {name} RAISED in {ms}ms :: {type(exc).__name__}", flush=True)
 
         if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)
