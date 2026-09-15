@@ -22,7 +22,8 @@ public sealed class RoutineBindingService(
     IConfiguration configuration,
     IHttpClientFactory httpClientFactory,
     IHttpContextAccessor httpContextAccessor,
-    ILogger<RoutineBindingService> logger)
+    ILogger<RoutineBindingService> logger,
+    TokenCredential? credential = null)
 {
     public const string InvocationPrefix = "hermes-routine:v1:";
     public const string CapabilityPrefix = "hermes-routine-capability:v1:";
@@ -32,7 +33,7 @@ public sealed class RoutineBindingService(
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly byte[] _signingKey = LoadSigningKey(configuration);
-    private readonly TokenCredential _credential = new DefaultAzureCredential();
+    private readonly TokenCredential _credential = credential ?? new DefaultAzureCredential();
     private readonly string _projectEndpoint = (
         Environment.GetEnvironmentVariable("FOUNDRY_PROJECT_ENDPOINT")
         ?? Environment.GetEnvironmentVariable("AZURE_AI_PROJECT_ENDPOINT")

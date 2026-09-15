@@ -17,6 +17,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 ALLOWED_GUIDS = {
     "00000000-0000-0000-0000-000000000000",
     "00000003-0000-0000-c000-000000000000",  # Microsoft Graph
+    "11111111-1111-1111-1111-111111111111",  # isolated test tenant fixture
+    "22222222-2222-2222-2222-222222222222",  # isolated test blueprint fixture
+    "33333333-3333-3333-3333-333333333333",  # isolated test Agent Identity fixture
+    "44444444-4444-4444-4444-444444444444",  # isolated test Agent User fixture
     "036de73a-2484-fa6d-3988-3d7db76eb74e",  # .NET project ID
     "53ca6127-db72-4b80-b1b0-d745d6d5456d",  # Azure AI/Foundry User
     "5a807f24-c9de-44ee-a3a7-329e88a00ffc",  # Agent 365 tooling audience
@@ -106,7 +110,7 @@ def main() -> int:
         for finding in findings:
             print(f"  {finding}", file=sys.stderr)
         return 1
-    print(f"Public-tree audit passed ({len(tracked_files())} tracked files checked).")
+    print(f"Public-tree audit passed ({len(tracked_files())} tracked/candidate files checked).")
     return 0
 
 

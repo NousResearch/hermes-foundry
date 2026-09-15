@@ -23,6 +23,7 @@ import asyncio
 import datetime
 import email.utils
 import functools
+import inspect
 import os
 import threading
 import time
@@ -121,7 +122,7 @@ def _logged_tool(*d_args, **d_kwargs):
             print(f"[tool] {name} RAISED in {ms}ms :: {type(exc).__name__}: {exc}", flush=True)
             traceback.print_exc()
 
-        if asyncio.iscoroutinefunction(fn):
+        if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)
             async def inner(*a, **kw):
                 print(f"[tool] {name} start (args={sorted(kw)})", flush=True)

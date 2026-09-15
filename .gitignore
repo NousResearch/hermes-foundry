@@ -5,8 +5,8 @@
 /sidecar/
 
 # .NET build output
-src/edge/bin/
-src/edge/obj/
+**/bin/
+**/obj/
 src/edge/publish/
 src/edge/.vs/
 
