@@ -205,10 +205,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             _logger.LogError(
                 "Could not mint the agent's Graph token; type={ExceptionType}; this turn runs without M365 tools",
                 ex.GetType().Name);
-            // Same reason as the caller's token.missing: ILogger goes somewhere we cannot read on a
-            // hosted agent, so the exception type and message have to leave the container out of band
-            // or the failure is undiagnosable from outside.
-            EdgeLog("token.error", $"{ex.GetType().Name}: {ex.Message}");
+            EdgeLog("token.error", $"type={ex.GetType().Name}");
             return null;
         }
     }
@@ -498,7 +495,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             }
             catch (Exception ex)
             {
-                EdgeLog("upload.graph.token.error", $"{ex.GetType().Name}: {ex.Message}");
+                EdgeLog("upload.graph.token.error", $"type={ex.GetType().Name}");
             }
         }
         graphToken ??= await MintAgentGraphTokenAsync();
@@ -631,7 +628,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
             {
-                EdgeLog("upload.graph.failed", $"{ex.GetType().Name}: {ex.Message}");
+                EdgeLog("upload.graph.failed", $"type={ex.GetType().Name}");
             }
         }
 
@@ -750,7 +747,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                     turnContext.Activity.CreateEmailResponseActivity(AgentToAgentDisabledMessage));
                 EdgeLog("agent.to.agent.blocked", "channel=email");
             }
-            else EdgeLog("email.duplicate.suppressed", $"key={blockedKey}");
+            else EdgeLog("email.duplicate.suppressed", "agent-to-agent notification redelivered");
             return;
         }
 
@@ -758,7 +755,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         var dedupeKey = turnContext.Activity.Id ?? turnContext.Activity.Conversation?.Id;
         if (AlreadyReplied(dedupeKey))
         {
-            EdgeLog("email.duplicate.suppressed", $"key={dedupeKey}");
+            EdgeLog("email.duplicate.suppressed", "notification redelivered");
             return;
         }
         if (string.IsNullOrWhiteSpace(body))
@@ -798,7 +795,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             // that triggered the suspicious-sending alert, and a stack trace is useless to a human
             // recipient anyway.
             _logger.LogError("Hermes email turn failed; type={ExceptionType}", ex.GetType().Name);
-            EdgeLog("email.turn.FAILED", $"{ex.GetType().Name}: {ex.Message}");
+            EdgeLog("email.turn.FAILED", $"type={ex.GetType().Name}");
             return;
         }
         try
@@ -816,7 +813,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         }
         catch (Exception ex)
         {
-            EdgeLog("email.reply.FAILED", $"{ex.GetType().Name}: {ex.Message}");
+            EdgeLog("email.reply.FAILED", $"type={ex.GetType().Name}");
             throw;
         }
     }
@@ -840,9 +837,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         if (!action.Equals(InstallationUpdateActionTypes.Add, StringComparison.OrdinalIgnoreCase))
         {
             _logger.LogInformation(
-                "Skipping owner welcome for installation action {Action} on agent instance {AgentId}",
-                string.IsNullOrWhiteSpace(action) ? "<missing>" : action,
-                _agent.AgentId);
+                "Skipping owner welcome for installation action {Action}",
+                string.IsNullOrWhiteSpace(action) ? "<missing>" : action);
             return;
         }
 
@@ -869,10 +865,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         if (AlreadyReplied(dedupeKey))
         {
             _logger.LogInformation(
-                "Skipping duplicate owner welcome for agent instance {AgentId}; trigger {Trigger}, activity {ActivityId}",
-                _agent.AgentId,
-                trigger,
-                turnContext.Activity.Id);
+                "Skipping duplicate owner welcome; trigger={Trigger}", trigger);
             return;
         }
 
@@ -894,11 +887,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             _repliedTo.TryRemove(dedupeKey, out _);
             throw;
         }
-        _logger.LogInformation(
-            "Sent owner welcome to agent instance {AgentId}; trigger {Trigger}, activity {ActivityId}",
-            _agent.AgentId,
-            trigger,
-            turnContext.Activity.Id);
+        _logger.LogInformation("Sent owner welcome; trigger={Trigger}", trigger);
     }
 
     // ---- the turn ---------------------------------------------------------------------------
@@ -1078,7 +1067,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         }
         catch (Exception ex)
         {
-            EdgeLog("attach.handoff.bad", $"{ex.GetType().Name}: {ex.Message}");
+            EdgeLog("attach.handoff.bad", $"type={ex.GetType().Name}");
         }
     }
 
@@ -1133,7 +1122,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         }
         catch (Exception ex)
         {
-            EdgeLog("reply.FAILED", $"{ex.GetType().Name}: {ex.Message}");
+            EdgeLog("reply.FAILED", $"type={ex.GetType().Name}");
             throw;
         }
     }
@@ -1250,7 +1239,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             }
             catch (Exception ex)
             {
-                EdgeLog("attach.FAILED", $"{ex.GetType().Name}: {ex.Message}");
+                EdgeLog("attach.FAILED", $"type={ex.GetType().Name}");
             }
             finally
             {
@@ -1365,20 +1354,19 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         // topology (RUNBOOK 7ab): the blueprint's only federated credentials are for the project
         // managed identity and an internal FMI path, not for the agent identity we were presenting.
         // AgentTokenHelper is kept as a fallback for turn-less callers only.
-        // Log what Microsoft's OWN extractor says the agentic identity is. This is the
-        // authoritative source for agentAppInstanceId — the value an hour of GUID-swapping failed to
-        // determine. Config can then be set from fact rather than from guessing.
+        // Record only structural presence. Raw tenant, instance and user identifiers are not needed
+        // in production telemetry and would turn diagnostics into an identity inventory.
         if (turnContext != null)
         {
             try
             {
-                EdgeLog("agentic.ids",
-                    $"tenant={Microsoft.Agents.Builder.App.AgenticAuthorization.GetAgenticTenantId(turnContext)} " +
-                    $"instance={Microsoft.Agents.Builder.App.AgenticAuthorization.GetAgenticInstanceId(turnContext)} " +
-                    $"user={Microsoft.Agents.Builder.App.AgenticAuthorization.GetAgenticUser(turnContext)} " +
+                EdgeLog("agentic.context",
+                    $"tenantPresent={!string.IsNullOrWhiteSpace(Microsoft.Agents.Builder.App.AgenticAuthorization.GetAgenticTenantId(turnContext))} " +
+                    $"instancePresent={!string.IsNullOrWhiteSpace(Microsoft.Agents.Builder.App.AgenticAuthorization.GetAgenticInstanceId(turnContext))} " +
+                    $"userPresent={!string.IsNullOrWhiteSpace(Microsoft.Agents.Builder.App.AgenticAuthorization.GetAgenticUser(turnContext))} " +
                     $"isAgentic={Microsoft.Agents.Builder.App.AgenticAuthorization.IsAgenticRequest(turnContext)}");
             }
-            catch (Exception ex) { EdgeLog("agentic.ids.error", $"{ex.GetType().Name}: {ex.Message}"); }
+            catch (Exception ex) { EdgeLog("agentic.context.error", $"type={ex.GetType().Name}"); }
         }
 
         string graphToken = null;
@@ -1393,7 +1381,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             }
             catch (Exception ex)
             {
-                EdgeLog("token.exchange.error", $"{ex.GetType().Name}: {ex.Message}");
+                EdgeLog("token.exchange.error", $"type={ex.GetType().Name}");
             }
         }
         else EdgeLog("token.exchange.skip", $"userAuth={_userAuth != null} turn={turnContext != null}");
@@ -1503,7 +1491,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                     }
                     catch (Exception ex)
                     {
-                        EdgeLog("tool.progress.parse.failed", $"{ex.GetType().Name}: {ex.Message}");
+                        EdgeLog("tool.progress.parse.failed", $"type={ex.GetType().Name}");
                     }
                     continue;
                 }
@@ -1552,7 +1540,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                 }
                 catch (Exception ex)
                 {
-                    EdgeLog("hermes.chunk.parse.failed", $"{ex.GetType().Name}: {ex.Message}");
+                    EdgeLog("hermes.chunk.parse.failed", $"type={ex.GetType().Name}");
                 }
             }
 
@@ -1901,7 +1889,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         {
             // Non-fatal, but it means the tier reverts to outsider downstream, so say so loudly
             // rather than letting the agent quietly disown its owner again.
-            EdgeLog("email.sender.stamp.failed", $"{ex.GetType().Name}: {ex.Message} — tier will fall back to outsider");
+            EdgeLog("email.sender.stamp.failed",
+                $"type={ex.GetType().Name}; tier will fall back to outsider");
         }
     }
 
@@ -1949,7 +1938,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                 }
                 catch (Exception ex)
                 {
-                    EdgeLog("agent.sender.exchange.error", $"{ex.GetType().Name}: {ex.Message}");
+                    EdgeLog("agent.sender.exchange.error", $"type={ex.GetType().Name}");
                 }
             }
             token ??= await MintAgentGraphTokenAsync();
@@ -1980,7 +1969,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         }
         catch (Exception ex)
         {
-            EdgeLog("agent.sender.resolve.error", $"{ex.GetType().Name}: {ex.Message}");
+            EdgeLog("agent.sender.resolve.error", $"type={ex.GetType().Name}");
             return null;
         }
     }
@@ -2030,7 +2019,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         }
         catch (Exception ex)
         {
-            EdgeLog("email.sender.error", $"{ex.GetType().Name}: {ex.Message}");
+            EdgeLog("email.sender.error", $"type={ex.GetType().Name}");
             return null;
         }
     }

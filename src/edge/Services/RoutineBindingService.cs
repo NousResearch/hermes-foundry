@@ -181,15 +181,13 @@ public sealed class RoutineBindingService(
         var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            logger.LogError("Foundry routine creation failed with {Status}: {Body}",
-                (int)response.StatusCode, Truncate(responseBody));
+            logger.LogError("Foundry routine creation failed with HTTP {Status}",
+                (int)response.StatusCode);
             return RoutineControlResult.Failure(
                 $"Foundry rejected the routine with HTTP {(int)response.StatusCode}: {SafeServiceError(responseBody)}");
         }
 
-        logger.LogInformation(
-            "Created automatically bound routine {RoutineName} for Agent Identity {AgentIdentityId}",
-            internalName, capability.AgentIdentityId);
+        logger.LogInformation("Created an automatically instance-bound routine");
         return RoutineControlResult.Success(
             $"Routine '{binding.DisplayName}' was created and enabled. "
             + $"Schedule: {binding.CronExpression} ({binding.TimeZone}).",
@@ -421,10 +419,8 @@ public sealed class RoutineBindingService(
 
     private void LogFoundryCaller(string accessToken, string? foundryCallId)
     {
-        // Never log the bearer token. The non-secret identity claims are enough to prove which
-        // principal DefaultAzureCredential selected inside this particular hosted session. That
-        // distinction matters here because an Agent 365 instance identity, the shared Hosted Agent
-        // runtime identity, and the blueprint principal are three different directory objects.
+        // Never log the bearer token or raw directory claims. Stable one-way tags are enough to
+        // distinguish the ambient hosted identity, Agent Identity and blueprint during diagnosis.
         try
         {
             var parts = accessToken.Split('.');
@@ -438,17 +434,12 @@ public sealed class RoutineBindingService(
 
             using var document = JsonDocument.Parse(payload);
             var claims = document.RootElement;
-            // Keep this at Warning while routine-management authorization is under investigation.
-            // The hosted production logger currently drops Information events for this category,
-            // which hid the only evidence that distinguishes the ambient hosted identity from an
-            // Agent 365 instance or blueprint principal. These are non-secret directory claims;
-            // the bearer token is never logged.
             logger.LogWarning(
-                "Foundry routine caller: oid={ObjectId}, appid={ApplicationId}, azp={AuthorizedParty}, "
+                "Foundry routine caller: oid_tag={ObjectIdTag}, appid_tag={ApplicationIdTag}, azp_tag={AuthorizedPartyTag}, "
                 + "idtyp={IdentityType}, call-id present={FoundryCallIdPresent}",
-                Claim(claims, "oid"),
-                Claim(claims, "appid"),
-                Claim(claims, "azp"),
+                ClaimTag(claims, "oid"),
+                ClaimTag(claims, "appid"),
+                ClaimTag(claims, "azp"),
                 Claim(claims, "idtyp"),
                 !string.IsNullOrWhiteSpace(foundryCallId));
         }
@@ -465,6 +456,14 @@ public sealed class RoutineBindingService(
         claims.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString() ?? ""
             : "";
+
+    private static string ClaimTag(JsonElement claims, string name)
+    {
+        var value = Claim(claims, name);
+        if (string.IsNullOrWhiteSpace(value)) return "none";
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))
+            .ToLowerInvariant()[..12];
+    }
 
     private static string ReadFoundryCallId(HttpRequest? request)
     {
@@ -490,6 +489,15 @@ public sealed class RoutineBindingService(
         if (parts.Length != 2 || !TryB64Url(parts[0], out var payload) || !TryB64Url(parts[1], out var signature))
         {
             error = "The routine authority has an invalid format.";
+            return false;
+        }
+        // Convert.FromBase64String accepts non-zero unused trailing bits, so multiple textual
+        // spellings can decode to the same signed bytes. Require our canonical unpadded base64url
+        // encoding before comparing the MAC; capabilities then have exactly one representation.
+        if (!string.Equals(parts[0], B64Url(payload), StringComparison.Ordinal)
+            || !string.Equals(parts[1], B64Url(signature), StringComparison.Ordinal))
+        {
+            error = "The routine authority has a non-canonical format.";
             return false;
         }
         using var hmac = new HMACSHA256(_signingKey);

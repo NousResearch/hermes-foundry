@@ -59,10 +59,7 @@ public sealed class AgentUserAuthorizationService(
         if (token.Length == 0)
             throw new InvalidOperationException("Entra Agent OBO returned an empty access token.");
 
-        logger.LogInformation(
-            "Acquired downstream authorization through Entra Agent OBO for Agent Identity {AgentIdentityId} and Agent User {AgentUserId}",
-            agentIdentityId,
-            agentUserId);
+        logger.LogInformation("Acquired downstream authorization through Entra Agent OBO");
         return token;
     }
 }

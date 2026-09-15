@@ -41,6 +41,10 @@ class EdgePrivacyContractTests(unittest.TestCase):
         self.assertNotIn('$"fromName=', source)
         self.assertNotIn('$"recipId=', source)
         self.assertNotIn('$"conv=', source)
+        self.assertNotIn('EdgeLog("agentic.ids"', source)
+        self.assertNotIn("ex.Message", "\n".join(
+            line for line in source.splitlines() if "EdgeLog(" in line
+        ))
 
     def test_foundry_telemetry_does_not_export_genai_content_or_connection_strings(self):
         source = (ROOT / "src/edge/Program.cs").read_text()
@@ -51,12 +55,34 @@ class EdgePrivacyContractTests(unittest.TestCase):
         self.assertNotIn('Azure Key Vault configured: {keyVaultUri}', source)
 
     def test_compatibility_mode_logs_no_agent_ids_or_service_response_bodies(self):
-        source = (
+        factory = (
             ROOT / "src/edge/AgentLogic/ResponsesApi/ResponsesApiAgentLogicServiceFactory.cs"
         ).read_text()
-        self.assertNotIn("AGENTIC-IDS", source)
-        self.assertNotIn("Response: {Response}", source)
-        self.assertNotIn("({Url})", source)
+        service = (
+            ROOT / "src/edge/AgentLogic/ResponsesApi/ResponsesApiAgentLogicService.cs"
+        ).read_text()
+        self.assertNotIn("AGENTIC-IDS", factory)
+        self.assertNotIn("Response: {Response}", factory)
+        self.assertNotIn("({Url})", factory)
+        self.assertNotIn("Process environment variables", service)
+        self.assertNotIn("Responses API request: {Request}", service)
+        self.assertNotIn("Responses API response: {Response}", service)
+        self.assertNotIn("{IncomingText}", service)
+        self.assertNotIn("{ResponseId}", service)
+        self.assertNotIn("{ConversationId}", service)
+
+    def test_identity_and_routine_logs_use_no_raw_directory_identifiers(self):
+        router = (
+            ROOT / "src/edge/AgentLogic/HermesRouter/HermesRouterAgentLogicService.cs"
+        ).read_text()
+        routine = (ROOT / "src/edge/Services/RoutineBindingService.cs").read_text()
+        obo = (ROOT / "src/edge/Services/AgentUserAuthorizationService.cs").read_text()
+        self.assertNotIn('EdgeLog("agentic.ids"', router)
+        self.assertNotIn("{AgentIdentityId}", routine)
+        self.assertNotIn("{AgentUserId}", routine)
+        self.assertNotIn("{AgentIdentityId}", obo)
+        self.assertNotIn("{AgentUserId}", obo)
+        self.assertIn("oid_tag={ObjectIdTag}", routine)
 
     def test_activity_and_routine_paths_forward_safe_correlation(self):
         activity = (

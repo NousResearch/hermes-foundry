@@ -129,14 +129,14 @@ class FoundryProjectInferenceTests(unittest.TestCase):
             source,
         )
 
-    def test_routine_diagnostics_log_identity_claims_not_bearer_token(self):
+    def test_routine_diagnostics_hash_identity_claims_and_never_log_bearer_token(self):
         source = (
             self.root / "src" / "edge" / "Services" / "RoutineBindingService.cs"
         ).read_text()
         self.assertIn("LogFoundryCaller(token.Token, foundryCallId)", source)
-        self.assertIn('Claim(claims, "oid")', source)
-        self.assertIn('Claim(claims, "appid")', source)
-        self.assertIn('Claim(claims, "azp")', source)
+        self.assertIn('ClaimTag(claims, "oid")', source)
+        self.assertIn('ClaimTag(claims, "appid")', source)
+        self.assertIn('ClaimTag(claims, "azp")', source)
         self.assertNotIn("logger.LogInformation(accessToken", source)
         self.assertIn(
             '[JsonPropertyName("foundry_call_id")] public string FoundryCallId',

@@ -182,7 +182,9 @@ public class A365AgentApplication : AgentApplication
                     }
                     catch (Exception streamEx)
                     {
-                        _logger.LogWarning(streamEx, "Failed to queue error text on streaming response");
+                        _logger.LogWarning(
+                            "Failed to queue error text on streaming response; type={ExceptionType}",
+                            streamEx.GetType().Name);
                     }
                 }
                 else
@@ -209,7 +211,9 @@ public class A365AgentApplication : AgentApplication
                     }
                     catch (Exception streamEx)
                     {
-                        _logger.LogWarning(streamEx, "Failed to end streaming response");
+                        _logger.LogWarning(
+                            "Failed to end streaming response; type={ExceptionType}",
+                            streamEx.GetType().Name);
                     }
                 }
             }

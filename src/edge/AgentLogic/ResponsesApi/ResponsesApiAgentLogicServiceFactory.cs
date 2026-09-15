@@ -84,7 +84,7 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
         var manifestPath = Path.Combine(AppContext.BaseDirectory, "ToolingManifest.json");
         if (!File.Exists(manifestPath))
         {
-            logger.LogWarning("ToolingManifest.json not found at {Path}", manifestPath);
+            logger.LogWarning("ToolingManifest.json was not found");
             return [];
         }
 

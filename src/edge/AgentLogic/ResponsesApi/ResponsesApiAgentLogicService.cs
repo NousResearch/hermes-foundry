@@ -46,7 +46,11 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     public async Task NewActivityReceived(ITurnContext turnContext, ITurnState turnState, CancellationToken cancellationToken)
     {
         var incomingText = turnContext.Activity.Text;
-        _logger.LogInformation("New activity received (Responses API): {IncomingText}", incomingText);
+        _logger.LogInformation(
+            "New activity received in non-production ResponsesApi mode; type={ActivityType} channel={ChannelId} attachments={AttachmentCount}",
+            turnContext.Activity.Type,
+            turnContext.Activity.ChannelId,
+            turnContext.Activity.Attachments?.Count ?? 0);
 
         var sender = turnContext.Activity.From;
 
@@ -110,10 +114,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         var response = await InvokeResponsesApiAsync($"You received a new email. Please look at the email and return a response in html format. From: {fromEmail}\nEmail details:\n{emailJson}", conversationId);
         var responseActivity = EmailResponse.CreateEmailResponseActivity(response);
 
-        _logger.LogInformation(
-            "Outgoing email response activity - original ReplyToId={OriginalReplyToId}, ConversationId={ConversationId}",
-            responseActivity.ReplyToId,
-            responseActivity.Conversation?.Id);
+        _logger.LogInformation("Outgoing email response activity created in ResponsesApi mode");
 
         await turnContext.SendActivityAsync(responseActivity);
     }
@@ -135,9 +136,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         if (string.IsNullOrEmpty(contentUrl))
         {
             _logger.LogWarning(
-                "Comment notification for CommentId={CommentId} on DocumentId={DocumentId} has no attachment ContentUrl; cannot fetch document content.",
-                comment.CommentId,
-                comment.DocumentId);
+                "Comment notification has no attachment ContentUrl; cannot fetch document content.");
             return;
         }
 
@@ -198,12 +197,11 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
         // The reply is posted on the comment thread by the MCP server's ReplyToComment tool,
         // so there is nothing to send back through the activity protocol here. The model's
-        // final text (if any) is logged for diagnostics only.
+        // final text can contain document or user content, so log only whether it was present.
         _logger.LogInformation(
-            "Comment reply flow finished for {Product} CommentId={CommentId}. Model output (for diagnostics only): {Response}",
+            "Comment reply flow finished for {Product}; output present={OutputPresent}",
             productLabel,
-            comment.CommentId,
-            string.IsNullOrWhiteSpace(response) ? "(empty — reply was posted via MCP tool)" : response);
+            !string.IsNullOrWhiteSpace(response));
     }
 
     private static (string Product, string McpServer) InferProductFromUrl(string url)
@@ -240,15 +238,6 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
     /// </summary>
     private async Task<string> InvokeResponsesApiAsync(string input, string conversationId)
     {
-        var envVars = Environment.GetEnvironmentVariables();
-        var envLines = new List<string>(envVars.Count);
-        foreach (System.Collections.DictionaryEntry entry in envVars)
-        {
-            envLines.Add($"{entry.Key}={entry.Value}");
-        }
-        envLines.Sort(StringComparer.OrdinalIgnoreCase);
-        _logger.LogInformation("Process environment variables ({Count}):{NewLine}{EnvVars}", envLines.Count, Environment.NewLine, string.Join(Environment.NewLine, envLines));
-
         var endpoint = _configuration["AzureOpenAIEndpoint"] ?? throw new InvalidOperationException("AzureOpenAIEndpoint not configured");
         var deployment = _configuration["ModelDeployment"] ?? throw new InvalidOperationException("ModelDeployment not configured");
         var instructions = AgentInstructions.GetInstructions(_agentMetadata);
@@ -313,8 +302,6 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
         });
 
-        _logger.LogDebug("Responses API request: {Request}", json);
-
         // Use Azure AI Foundry Responses API endpoint (model specified in body)
         var requestUrl = $"{endpoint.TrimEnd('/')}/openai/responses?api-version=2025-03-01-preview";
 
@@ -336,11 +323,9 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
 
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogError("Responses API call failed with status {StatusCode}: {Response}", response.StatusCode, responseContent);
+            _logger.LogError("Responses API call failed with status {StatusCode}", response.StatusCode);
             return $"I encountered an error processing your request. Status: {response.StatusCode}";
         }
-
-        _logger.LogDebug("Responses API response: {Response}", responseContent);
 
         // Save the response id for conversation continuity
         SaveResponseId(conversationId, responseContent);
@@ -395,7 +380,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
                     var dir = GetResponseStoreDir();
                     Directory.CreateDirectory(dir);
                     File.WriteAllText(GetResponseIdFilePath(conversationId), responseId);
-                    _logger.LogDebug("Saved response_id {ResponseId} for conversation {ConversationId}", responseId, conversationId);
+                    _logger.LogDebug("Saved hashed conversation continuation state");
                 }
             }
         }

@@ -83,7 +83,7 @@ public sealed class RoutineBindingServiceTests
         }, CancellationToken.None);
 
         Assert.False(result.Ok);
-        Assert.Contains("signature is invalid", result.Message);
+        Assert.Contains("routine authority", result.Message);
         Assert.Empty(handler.Requests);
     }
 
