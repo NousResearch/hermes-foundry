@@ -311,10 +311,10 @@ cat <<EOF
 ==> version $NEW created and verified. NOTHING IS ROUTED TO IT YET.
 
 To serve it:
-  az rest --method PATCH --resource $RES \\
-    --url "${BASE}/agents/${AGENT}?api-version=v1" \\
-    --headers "Content-Type=application/merge-patch+json" \\
-    --body '{"agent_endpoint":{"version_selector":{"version_selection_rules":[{"agent_version":"$NEW","traffic_percentage":100,"type":"FixedRatio"}]}}}'
+  ./scripts/route-agent-version.sh \\
+    --account "$ACCOUNT" --project "$PROJECT" --agent "$AGENT" \\
+    --target-version "$NEW" --expect-current "$CUR"
 
-To roll back, run the same command with agent_version "$CUR".
+To roll back after that, reverse the target and expected-current versions. The script revalidates
+the target, refuses stale state, preserves Graph permissions, and reads the route back after PATCH.
 EOF

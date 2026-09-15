@@ -404,6 +404,12 @@ The validator checks the 100% serving route, Activity and Responses protocols,
 managed Agent Identity blueprint, Graph inheritable scopes, and optional Bot Service binding. It
 does not print environment values and performs no writes.
 
+For an image upgrade or rollback, create and inspect an unrouted version with `new-version.sh`, then
+use the guarded routing command it prints. `scripts/route-agent-version.sh` requires both the target
+version and the version expected to be serving. It refuses a stale expectation, validates the
+target and Graph inheritance, changes the route, and reads it back. This keeps activation and
+rollback explicit while preventing one release from silently overwriting another.
+
 Start a new Teams chat with the new instance and test in this order:
 
 1. Ask it to report its own Microsoft 365 identity.
