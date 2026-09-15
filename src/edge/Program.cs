@@ -29,7 +29,7 @@ if (!string.IsNullOrEmpty(keyVaultName))
         new Uri(keyVaultUri),
         new DefaultAzureCredential());
 
-    Console.WriteLine($"Azure Key Vault configured: {keyVaultUri}");
+    Console.WriteLine("Azure Key Vault configuration enabled.");
 }
 else
 {
@@ -114,7 +114,9 @@ builder.Services.AddLogging();
 #region Setup A365
 
 
-AppContext.SetSwitch("Azure.Experimental.TraceGenAIMessageContent", true);
+// Prompts and completions may contain email, document and chat content. Keep distributed tracing
+// enabled without exporting message bodies to telemetry.
+AppContext.SetSwitch("Azure.Experimental.TraceGenAIMessageContent", false);
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 
 if (Environment.GetEnvironmentVariable("EnableKairoTracing") == "true")
@@ -150,8 +152,7 @@ builder.Services.AddScoped<ResponseHandler, HermesResponseHandler>();
 
 var app = builder.Build();
 
-var telemetryConfig = app.Services.GetRequiredService<TelemetryConfiguration>();
-Console.WriteLine($"AI ConnectionString: {telemetryConfig.ConnectionString}");
+_ = app.Services.GetRequiredService<TelemetryConfiguration>();
 
 var logger = app.Services.GetRequiredService<ILogger<Program>>();
 logger.LogWarning("Application starting...");

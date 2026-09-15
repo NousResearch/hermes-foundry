@@ -34,8 +34,7 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
         if (agentLogic.Equals("HermesRouter", StringComparison.OrdinalIgnoreCase))
         {
             logger.LogInformation(
-                "Using Hermes thin edge for agent {AgentId} (instance {InstanceId}); forwarding turn to sandbox-router.",
-                agent.AgentId, agent.AgentApplicationId);
+                "Using the Hermes router for the current agent instance");
             return new HermesRouter.HermesRouterAgentLogicService(
                 agent, configuration, logger, tokenHelper, userAuthorization, routineBindings,
                 modelPolicy);
@@ -45,9 +44,7 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
         // read the agent's mailbox. Every failure of the turn-less (routine) path came from guessing
         // agentAppInstanceId; this prints the value Microsoft's own code uses, so config can be set
         // from fact. Read it with :logstream. Do not change behaviour here.
-        logger.LogWarning(
-            "AGENTIC-IDS blueprint={Blueprint} instance={Instance} upn={Upn} tenant={Tenant} userId={UserId}",
-            agent.AgentApplicationId, agent.AgentId, agent.EmailId, agent.TenantId, agent.UserId);
+        logger.LogWarning("Using the non-production ResponsesApi compatibility mode");
 
         // Acquire token for MCP servers
         var requestContext = new TokenRequestContext(["ea9ffc3e-8a23-4a7d-836d-234d7c7565c1/.default"]);
@@ -101,7 +98,7 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
     private async Task<List<McpServerConfig>> DiscoverFromApiAsync(Guid agentInstanceId, string accessToken)
     {
         var url = $"https://agent365.svc.cloud.microsoft/agents/v2/{agentInstanceId}/mcpServers";
-        logger.LogInformation("Discovering MCP servers from {Url}", url);
+        logger.LogInformation("Discovering MCP servers from the Agent 365 service");
 
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
@@ -111,17 +108,12 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
 
         if (!response.IsSuccessStatusCode)
         {
-            logger.LogError("Failed to discover MCP servers. Status: {StatusCode}, Response: {Response}", response.StatusCode, responseContent);
+            logger.LogError("Failed to discover MCP servers. Status: {StatusCode}", response.StatusCode);
             return [];
         }
 
         var servers = JsonSerializer.Deserialize<List<McpServerConfig>>(responseContent) ?? [];
         logger.LogInformation("Discovered {Count} MCP servers for the current agent instance", servers.Count);
-
-        foreach (var server in servers)
-        {
-            logger.LogInformation("  MCP Server: {Name} ({Url})", server.McpServerName, server.Url);
-        }
 
         return servers;
     }

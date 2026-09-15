@@ -40,6 +40,22 @@ class EdgePrivacyContractTests(unittest.TestCase):
         self.assertNotIn('$"recipId=', source)
         self.assertNotIn('$"conv=', source)
 
+    def test_foundry_telemetry_does_not_export_genai_content_or_connection_strings(self):
+        source = (ROOT / "src/edge/Program.cs").read_text()
+        self.assertIn(
+            'SetSwitch("Azure.Experimental.TraceGenAIMessageContent", false)', source
+        )
+        self.assertNotIn('AI ConnectionString:', source)
+        self.assertNotIn('Azure Key Vault configured: {keyVaultUri}', source)
+
+    def test_compatibility_mode_logs_no_agent_ids_or_service_response_bodies(self):
+        source = (
+            ROOT / "src/edge/AgentLogic/ResponsesApi/ResponsesApiAgentLogicServiceFactory.cs"
+        ).read_text()
+        self.assertNotIn("AGENTIC-IDS", source)
+        self.assertNotIn("Response: {Response}", source)
+        self.assertNotIn("({Url})", source)
+
 
 if __name__ == "__main__":
     unittest.main()
