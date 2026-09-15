@@ -10,7 +10,7 @@ if [ "${1:-}" = "--blueprint-id" ]; then
 elif [ -n "${1:-}" ]; then
   echo "usage: $0 --blueprint-id <guid>" >&2; exit 2
 fi
-[[ "$BLUEPRINT_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || {
+[[ "$BLUEPRINT_ID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || {
   echo "ERROR: BLUEPRINT_ID must be a GUID" >&2; exit 2;
 }
 
@@ -83,9 +83,11 @@ PY
 STATUS=$(curl --silent --output "$WORK/current-inheritance.json" --write-out '%{http_code}' \
   "$INHERITANCE_URI" -H "$AUTH" -H "Accept: application/json")
 if [ "$STATUS" = 200 ]; then
+  python3 ./scripts/merge_inheritable_scopes.py \
+    "$WORK/current-inheritance.json" "${SCOPES[@]}" > "$WORK/inheritance-patch.json"
   curl --fail-with-body --silent --show-error -X PATCH "$INHERITANCE_URI" \
     -H "$AUTH" -H "Content-Type: application/json" -H "OData-Version: 4.0" \
-    --data-binary "@$WORK/inheritance.json" >/dev/null
+    --data-binary "@$WORK/inheritance-patch.json" >/dev/null
 elif [ "$STATUS" = 404 ]; then
   python3 - "$GRAPH_APP_ID" "${SCOPES[@]}" > "$WORK/inheritance-create.json" <<'PY'
 import json, sys
@@ -103,7 +105,6 @@ PY
     --data-binary "@$WORK/inheritance-create.json" >/dev/null
 else
   echo "ERROR: Graph returned HTTP $STATUS while reading blueprint inheritance" >&2
-  sed -n '1,20p' "$WORK/current-inheritance.json" >&2
   exit 1
 fi
 

@@ -266,6 +266,10 @@ export BLUEPRINT_ID="$(python3 -c \
 ./scripts/configure-blueprint-graph-permissions.sh --blueprint-id "$BLUEPRINT_ID"
 ```
 
+The reconciliation is additive: it keeps any other valid inheritable scopes already configured by
+the tenant administrator and adds the Hermes baseline below. It fails without patching inheritance
+when the current Graph response is unreadable or malformed.
+
 The declared baseline is:
 
 - `Chat.ReadWrite`
