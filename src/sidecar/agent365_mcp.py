@@ -429,6 +429,27 @@ _GRAPH_RETRYABLE_STATUS = {429, 503, 504}
 _GRAPH_IDEMPOTENT_METHODS = {"GET", "HEAD", "PUT", "DELETE"}
 
 
+def _graph_url(path: str) -> str:
+    """Resolve a Graph path without ever forwarding its bearer token off Graph.
+
+    `graph_query` and `graph_write` are model-callable escape hatches. Treat their path as hostile:
+    an absolute attacker URL must not turn this sidecar into a token-exfiltration proxy.
+    """
+    value = (path or "").strip()
+    if not value or any(ord(char) < 32 for char in value) or "\\" in value:
+        raise ValueError("Graph path is empty or contains invalid characters")
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme or parsed.netloc:
+        if (parsed.scheme.lower() != "https"
+                or parsed.hostname is None
+                or parsed.hostname.lower() != "graph.microsoft.com"
+                or parsed.port not in (None, 443)
+                or not (parsed.path == "/v1.0" or parsed.path.startswith("/v1.0/"))):
+            raise ValueError("absolute Graph URLs must use https://graph.microsoft.com/v1.0")
+        return value
+    return f"{GRAPH}/{value.lstrip('/')}"
+
+
 def _retry_delay(headers, attempt: int, cap_seconds: float = 20) -> float:
     """Return Graph's requested delay, or bounded exponential backoff.
 
@@ -475,11 +496,14 @@ def _graph(method: str, path: str, body=None, raw_body: bool = False) -> str:
 
     503/504 get the same treatment: they are transient by definition.
     """
+    try:
+        url = _graph_url(path)
+    except ValueError as e:
+        return f"ERROR: unsafe Graph path refused: {e}. Nothing was sent."
     tok = _token()
     if not tok:
         return ("ERROR: no agent credential present in this sandbox. The Foundry edge did not "
                 "supply an agentic user token for this turn. This is a system fault — report it.")
-    url = path if path.startswith("http") else f"{GRAPH}/{path.lstrip('/')}"
     data = None
     headers = {"Authorization": f"Bearer {tok}", "Accept": "application/json"}
     if body is not None:
@@ -545,10 +569,13 @@ def _graph_bytes(method: str, path: str):
     URL must be fetched WITHOUT our Authorization header. So redirects are handled explicitly rather
     than letting urllib replay the agent's bearer token to a different host.
     """
+    try:
+        url = _graph_url(path)
+    except ValueError as e:
+        return None, f"ERROR: unsafe Graph path refused: {e}. Nothing was sent."
     tok = _token()
     if not tok:
         return None, "ERROR: no agent credential present in this sandbox."
-    url = path if path.startswith("http") else f"{GRAPH}/{path.lstrip('/')}"
 
     class _NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -587,10 +614,13 @@ def _graph_bytes(method: str, path: str):
 
 def _graph_put_bytes(path: str, blob: bytes, if_match: str = "") -> str:
     """Upload binary content, optionally refusing to overwrite a concurrently changed item."""
+    try:
+        url = _graph_url(path)
+    except ValueError as e:
+        return f"ERROR: unsafe Graph path refused: {e}. Nothing was sent."
     tok = _token()
     if not tok:
         return "ERROR: no agent credential present in this sandbox."
-    url = path if path.startswith("http") else f"{GRAPH}/{path.lstrip('/')}"
     headers = {
         "Authorization": f"Bearer {tok}",
         "Accept": "application/json",
