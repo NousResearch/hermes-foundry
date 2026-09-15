@@ -3,6 +3,8 @@ import importlib.util
 import io
 import os
 import pathlib
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -50,6 +52,48 @@ class GatewayPrivacyTests(unittest.TestCase):
 
         self.assertEqual(["contact <email>"], shipped)
         self.assertEqual("contact <email>", output.getvalue().strip())
+
+    def test_chat_turns_are_serialized_while_other_posts_are_not(self):
+        active = 0
+        maximum = 0
+        state_lock = threading.Lock()
+
+        class Probe(self.gateway.Handler):
+            def _do_POST(probe_self):
+                nonlocal active, maximum
+                with state_lock:
+                    active += 1
+                    maximum = max(maximum, active)
+                time.sleep(0.03)
+                with state_lock:
+                    active -= 1
+
+        first = object.__new__(Probe)
+        second = object.__new__(Probe)
+        first.path = second.path = "/v1/chat/completions"
+        threads = [threading.Thread(target=item.do_POST) for item in (first, second)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(1, maximum)
+
+    def test_turn_authority_is_erased_after_chat_finishes(self):
+        class Probe(self.gateway.Handler):
+            def _do_POST(probe_self):
+                self.gateway._agent_token.update(
+                    token="short-lived", upn="person@example.com",
+                    tier="owner", routine_capability="signed")
+
+        handler = object.__new__(Probe)
+        handler.path = "/v1/chat/completions"
+        handler.do_POST()
+
+        self.assertEqual(
+            {"token": "", "upn": "", "tier": "outsider", "routine_capability": ""},
+            self.gateway._agent_token,
+        )
 
 
 if __name__ == "__main__":

@@ -83,6 +83,21 @@ PASSTHROUGH = (
 # Last agent Graph token seen on a turn, held in memory only. Served to the m365 sidecar via
 # GET /v1/agent-token. Never written to disk, never logged.
 _agent_token = {"token": "", "upn": "", "tier": "outsider", "routine_capability": ""}
+_authority_lock = threading.Lock()
+
+# The sidecar asks for the current turn's authority through /v1/agent-token, but that request does
+# not yet carry an end-to-end turn ID. A ThreadingHTTPServer could otherwise run two users' Hermes
+# turns concurrently and let one tool call observe the other's Graph token or owner capability.
+# Serialize only chat turns within this agent container until the Hermes MCP transport can propagate
+# a correlation ID. Health, telemetry, attachment registration and token reads remain concurrent,
+# which is necessary for the active turn itself to complete.
+_turn_lock = threading.Lock()
+
+
+def _clear_turn_authority():
+    with _authority_lock:
+        _agent_token.update(
+            token="", upn="", tier="outsider", routine_capability="")
 
 # Files the sidecar produced during the current turn that belong on the reply as attachments.
 #
@@ -345,18 +360,31 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authorised():
                 self._send(401, b'{"error":"unauthorized"}')
                 return
-            tok = _agent_token.get("token", "")
-            routine_capability = _agent_token.get("routine_capability", "")
+            with _authority_lock:
+                authority = dict(_agent_token)
+            tok = authority.get("token", "")
+            routine_capability = authority.get("routine_capability", "")
             if not tok and not routine_capability:
                 self._send(404, b'{"error":"no agent turn authority seen yet"}')
                 return
-            self._send(200, json.dumps({"token": tok, "upn": _agent_token.get("upn", ""),
-                                        "tier": _agent_token.get("tier", "outsider"),
+            self._send(200, json.dumps({"token": tok, "upn": authority.get("upn", ""),
+                                        "tier": authority.get("tier", "outsider"),
                                         "routine_capability": routine_capability}).encode())
             return
         self._send(404, b'{"error":"not found"}')
 
     def do_POST(self):
+        if self.path == "/v1/chat/completions":
+            with _turn_lock:
+                try:
+                    return self._do_POST()
+                finally:
+                    # A Graph token or routine capability is usable only while this turn is
+                    # executing. Do not leave standing authority between messages.
+                    _clear_turn_authority()
+        return self._do_POST()
+
+    def _do_POST(self):
         # Drain the body BEFORE anything can return early. On a keep-alive connection an unread
         # body stays in the socket buffer and the server parses it as the next request line, so a
         # rejected request corrupts the one after it:
@@ -417,22 +445,20 @@ class Handler(BaseHTTPRequestHandler):
             # otherwise a failed mint on a colleague turn could inherit the previous owner's tier.
             # Clear the token too: using a stale credential from a different turn is worse than
             # reporting that Microsoft 365 is temporarily unavailable.
-            _agent_token["tier"] = self.headers.get("X-Caller-Tier") or "outsider"
-            # Owner-only, short-lived routine creation authority. Clear on every request so a
-            # colleague turn cannot inherit the previous owner's capability in this long-lived
-            # process. The sidecar can only return this opaque value to the edge; it cannot mint or
-            # alter the signed Agent Identity/User binding.
-            _agent_token["routine_capability"] = self.headers.get("X-Routine-Capability") or ""
-            # Capture the agent's Graph token as it passes through, so the m365 sidecar can use the
-            # SAME credential the edge minted for this turn rather than holding a blueprint secret
-            # of its own. Keeps "the agent never holds a credential" true for the tool path too.
-            tok = self.headers.get("x-agent-graph-token")
+            # Capture this request's complete authority as one snapshot. In particular, never
+            # inherit a UPN from the previous turn when a header is absent.
+            tok = self.headers.get("x-agent-graph-token") or ""
+            upn = self.headers.get("x-agent-upn", "") if tok else ""
+            with _authority_lock:
+                _agent_token.update(
+                    token=tok,
+                    upn=upn,
+                    tier=self.headers.get("X-Caller-Tier") or "outsider",
+                    routine_capability=self.headers.get("X-Routine-Capability") or "",
+                )
             if tok:
-                _agent_token["token"] = tok
-                _agent_token["upn"] = self.headers.get("x-agent-upn", "") or _agent_token["upn"]
-                log(f"[edge] agent.token.refreshed | upn={_agent_token['upn'] or '?'}")
+                log("[edge] agent.token.refreshed")
             else:
-                _agent_token["token"] = ""
                 log("[edge] agent.token.cleared | current turn supplied none")
 
             # Hermes' stream is the source of structured tool progress and 30-second keepalives.
