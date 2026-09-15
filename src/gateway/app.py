@@ -30,10 +30,12 @@ import hashlib
 import json
 import os
 import re
+import socket
 import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -41,6 +43,8 @@ HERMES_URL = os.environ["HERMES_URL"].rstrip("/")
 HERMES_KEY = os.environ.get("HERMES_KEY", "")
 GATEWAY_KEY = os.environ.get("GATEWAY_KEY", "")
 PORT = int(os.environ.get("PORT", "8080"))
+SIDECAR_HOST = os.environ.get("SIDECAR_HOST", "127.0.0.1")
+SIDECAR_PORT = int(os.environ.get("SIDECAR_PORT", "8010"))
 
 # Shared directory the sidecar spools outbound attachments into. Must match AGENT_OUTBOX in the
 # sidecar; both default to the same path so the two halves cannot drift apart silently.
@@ -101,6 +105,36 @@ def _clear_turn_authority():
     with _authority_lock:
         _agent_token.update(
             token="", upn="", tier="outsider", routine_capability="", correlation="")
+
+
+def _dependency_socket(target_url=None, host=None, port=None):
+    """Return dependency reachability without sending credentials or application content."""
+    try:
+        if target_url:
+            parsed = urllib.parse.urlsplit(target_url)
+            probe_host = parsed.hostname
+            probe_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        else:
+            probe_host, probe_port = host, port
+    except ValueError:
+        return False
+    if not probe_host or not probe_port:
+        return False
+    try:
+        with socket.create_connection((probe_host, probe_port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def _dependency_health():
+    """Aggregate local runtime health without exposing endpoints, identities, or error details."""
+    components = {
+        "gateway": True,
+        "hermes": _dependency_socket(target_url=HERMES_URL),
+        "m365_sidecar": _dependency_socket(host=SIDECAR_HOST, port=SIDECAR_PORT),
+    }
+    return {"ok": all(components.values()), "components": components}
 
 
 def _current_correlation():
@@ -363,8 +397,13 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def do_GET(self):
-        if self.path in ("/healthz", "/"):
+        if self.path == "/":
             self._send(200, b'{"ok":true}')
+            return
+        if self.path == "/healthz":
+            health = _dependency_health()
+            self._send(200 if health["ok"] else 503,
+                       json.dumps(health, separators=(",", ":")).encode())
             return
         # The m365 MCP sidecar polls this for the agent's current Graph token. The sidecar sits next
         # to Hermes as a long-lived container, so it cannot take the token from an env var captured

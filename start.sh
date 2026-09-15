@@ -273,4 +273,35 @@ AUXILIARY_PIDS+=("$!")
   done; log "WARNING: hermes never bound :8642 in 300s — gateway will 502 after HERMES_COLD_START_WAIT" ) &
 AUXILIARY_PIDS+=("$!")
 
+# The platform readiness probe intentionally targets the fast edge, not slow-starting Hermes. Once
+# all local services have had time to boot, record dependency-state transitions from the gateway's
+# deeper health aggregate. This emits component booleans only: never endpoints, tokens or content.
+( last=""
+  while true; do
+    state=$(python3 - <<'PY' 2>/dev/null || true
+import json, urllib.error, urllib.request
+try:
+    with urllib.request.urlopen("http://127.0.0.1:8080/healthz", timeout=1) as response:
+        payload = json.load(response)
+except urllib.error.HTTPError as error:
+    try:
+        payload = json.load(error)
+    except Exception:
+        payload = {"ok": False, "components": {"gateway": False}}
+except Exception:
+    payload = {"ok": False, "components": {"gateway": False}}
+components = payload.get("components") or {}
+print("ok=" + str(bool(payload.get("ok"))).lower() + " " + " ".join(
+    f"{name}={str(bool(components[name])).lower()}" for name in sorted(components)
+))
+PY
+)
+    if [ "$state" != "$last" ]; then
+      log "dependency.health | ${state:-unavailable}"
+      last="$state"
+    fi
+    sleep 30
+  done ) &
+AUXILIARY_PIDS+=("$!")
+
 while true; do sleep 3600; done

@@ -113,6 +113,52 @@ class GatewayPrivacyTests(unittest.TestCase):
             output.getvalue().strip(),
         )
 
+    def test_dependency_health_reports_only_component_booleans(self):
+        with mock.patch.object(
+            self.gateway, "_dependency_socket", side_effect=[True, False]
+        ):
+            health = self.gateway._dependency_health()
+
+        self.assertEqual({
+            "ok": False,
+            "components": {
+                "gateway": True,
+                "hermes": True,
+                "m365_sidecar": False,
+            },
+        }, health)
+        rendered = str(health)
+        self.assertNotIn(self.gateway.HERMES_URL, rendered)
+        if self.gateway.GATEWAY_KEY:
+            self.assertNotIn(self.gateway.GATEWAY_KEY, rendered)
+
+    def test_deep_health_returns_503_until_all_dependencies_are_reachable(self):
+        handler = object.__new__(self.gateway.Handler)
+        handler.path = "/healthz"
+        sent = []
+        handler._send = lambda status, body=b"", **kwargs: sent.append((status, body))
+
+        with mock.patch.object(self.gateway, "_dependency_health", return_value={
+            "ok": False,
+            "components": {"gateway": True, "hermes": False, "m365_sidecar": True},
+        }):
+            handler.do_GET()
+
+        self.assertEqual(503, sent[0][0])
+        self.assertEqual(False, __import__("json").loads(sent[0][1])["ok"])
+
+    def test_shallow_root_health_remains_available_during_cold_start(self):
+        handler = object.__new__(self.gateway.Handler)
+        handler.path = "/"
+        sent = []
+        handler._send = lambda status, body=b"", **kwargs: sent.append((status, body))
+
+        with mock.patch.object(self.gateway, "_dependency_health") as deep:
+            handler.do_GET()
+
+        self.assertEqual((200, b'{"ok":true}'), sent[0])
+        deep.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
