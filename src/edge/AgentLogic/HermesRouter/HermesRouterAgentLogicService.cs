@@ -163,7 +163,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             if (!res.IsSuccessStatusCode)
             {
                 // 404 means no manager is set — a legitimate state, not an error to retry forever.
-                EdgeLog("owner.resolve.failed", $"{(int)res.StatusCode} {body[..Math.Min(160, body.Length)]}");
+                EdgeLog("owner.resolve.failed", $"status={(int)res.StatusCode}");
                 _ownerResolved = true;
                 return;
             }
@@ -173,13 +173,13 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             _resolvedOwnerOid = root.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
             _resolvedOwnerUpn = root.TryGetProperty("userPrincipalName", out var upnEl) ? upnEl.GetString() : null;
             _ownerResolved = true;
-            EdgeLog("owner.resolved", $"manager={_resolvedOwnerUpn ?? "(none)"} "
-                                    + $"configured={_ownerUpn} "
-                                    + $"differs={!string.Equals(_resolvedOwnerUpn, _ownerUpn, StringComparison.OrdinalIgnoreCase)}");
+            EdgeLog("owner.resolved",
+                $"managerPresent={!string.IsNullOrWhiteSpace(_resolvedOwnerUpn)} " +
+                $"differsFromConfigured={!string.Equals(_resolvedOwnerUpn, _ownerUpn, StringComparison.OrdinalIgnoreCase)}");
         }
         catch (Exception ex)
         {
-            EdgeLog("owner.resolve.error", $"{ex.GetType().Name}: {ex.Message}");
+            EdgeLog("owner.resolve.error", $"type={ex.GetType().Name}");
         }
         finally
         {
@@ -237,18 +237,13 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         var declaredFileCount = turnContext.Activity.Attachments?.Count(a =>
             !string.IsNullOrWhiteSpace(a.ContentType)
             && !a.ContentType.StartsWith("text/html", StringComparison.OrdinalIgnoreCase)) ?? 0;
-        // LOG THE *FROM* FIELDS, not just the recipient. This line used to print recipId/recipAad —
-        // i.e. the AGENT — and nothing about who was speaking, which is the one thing every caller
-        // decision below depends on. When hfull answered Teams turns in 64ms with `result: success`
-        // and no reply, the log could not say whether the caller had been identified, because it
-        // never contained the caller.
+        // Record only structural metadata. From/recipient/conversation fields identify employees,
+        // agents and tenant conversations and therefore do not belong in application telemetry.
         var fromDbg = turnContext.Activity?.From;
-        var fromProps = fromDbg?.Properties is null ? "(null)" : string.Join("/", fromDbg.Properties.Keys);
         EdgeLog("message.in", $"channel={turnContext.Activity.ChannelId} type={turnContext.Activity.Type} " +
-                              $"fromId={fromDbg?.Id ?? "(none)"} fromAad={fromDbg?.AadObjectId ?? "(none)"} " +
-                              $"fromName={fromDbg?.Name ?? "(none)"} fromProps=[{fromProps}] " +
-                              $"recipId={turnContext.Activity.Recipient?.Id} recipAad={turnContext.Activity.Recipient?.AadObjectId} " +
-                              $"conv={turnContext.Activity.Conversation?.Id} textLen={(text ?? "").Length} " +
+                              $"callerIdPresent={!string.IsNullOrWhiteSpace(fromDbg?.AadObjectId)} " +
+                              $"callerAddressPresent={fromDbg?.Properties?.Count > 0} " +
+                              $"textLen={(text ?? "").Length} " +
                               $"declaredFiles={declaredFileCount} downloadedFiles={downloadedFileCount}");
         if (string.IsNullOrWhiteSpace(text) && declaredFileCount == 0)
         {
@@ -312,21 +307,24 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             // ⛔ THIS DIVERGES FROM THE THIN-FOUNDRY EDGE ON PURPOSE. It lives only in Plan F's forked
             // source (full-foundry/src/edge). Do not port it to the frozen stack without asking.
             var ch = Convert.ToString(turnContext.Activity?.ChannelId) ?? "";
+            // Bot-channel authentication proves that a request reached this bot; it does not make
+            // an anonymous Direct Line/Web Chat visitor an employee. Only accept this fail-open
+            // fallback for a Teams activity whose tenant matches the current Agent User.
+            var activityTenant = turnContext.Activity?.Conversation?.TenantId;
             var tenantAuthenticated = string.Equals(ch, "msteams", StringComparison.OrdinalIgnoreCase)
-                                   || string.Equals(ch, "directline", StringComparison.OrdinalIgnoreCase)
-                                   || string.Equals(ch, "webchat", StringComparison.OrdinalIgnoreCase);
+                                   && Guid.TryParse(activityTenant, out var activityTenantId)
+                                   && _agent?.TenantId != Guid.Empty
+                                   && activityTenantId == _agent.TenantId;
             if (tenantAuthenticated)
             {
                 EdgeLog("caller.unidentified.allowed",
-                        $"channel={ch} — could not extract oid/email from the Activity, but this channel " +
-                        $"is tenant-authenticated by Bot Service, so treating as COLLEAGUE instead of " +
-                        $"refusing. email={caller.email ?? "(none)"} oid={caller.oid ?? "(none)"}");
+                        $"channel={ch} — caller fields were absent, but the signed Teams tenant " +
+                        $"matches the Agent User tenant; treating as COLLEAGUE");
                 caller = ("colleague", caller.email, caller.oid);
             }
             else
             {
-                EdgeLog("caller.refused", $"tier=outsider channel={ch} " +
-                                          $"email={caller.email ?? "(none)"} oid={caller.oid ?? "(none)"}");
+                EdgeLog("caller.refused", $"tier=outsider channel={ch}");
                 return;
             }
         }
@@ -688,12 +686,12 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         AgentNotificationActivity emailEvent)
     {
         var body = ExtractBody(turnContext.Activity);
-        var from = turnContext.Activity.From?.Name ?? turnContext.Activity.From?.Id ?? "someone";
+        var senderName = turnContext.Activity.From?.Name ?? "a colleague";
         // Same reason as the message path: the owner must be known before any tier is evaluated.
         await EnsureOwnerResolvedAsync(CancellationToken.None);
-        EdgeLog("email.in", $"from={from} bodyLen={(body ?? "").Length} " +
-                            $"recipId={turnContext.Activity.Recipient?.Id} conv={turnContext.Activity.Conversation?.Id} " +
-                            $"replyToId={turnContext.Activity.Id} serviceUrl={turnContext.Activity.ServiceUrl}");
+        EdgeLog("email.in", $"bodyLen={(body ?? "").Length} " +
+                            $"recipientPresent={turnContext.Activity.Recipient is not null} " +
+                            $"conversationPresent={turnContext.Activity.Conversation is not null}");
         // HARD STOP for senders outside the organisation — see NewActivityReceived for why this is
         // silent. Checked before dedupe so an outsider cannot consume a dedupe slot either.
         //
@@ -724,7 +722,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                 StampResolvedSender(turnContext, resolved);
                 emailCaller = CallerOf(turnContext);
                 identified = true;
-                EdgeLog("email.sender.resolved", $"email={resolved} tier={emailCaller.tier}");
+                EdgeLog("email.sender.resolved", $"tier={emailCaller.tier}");
             }
             else
             {
@@ -732,15 +730,14 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                 // Drop before dedupe, RunAsync, tools, or any outbound reply. Microsoft 365 does not
                 // expose a documented sender-domain filter for the notification subscription, so
                 // this edge check is the first boundary we control.
-                EdgeLog("email.sender.unresolved", $"from={from} — dropped before Hermes (organization-only email policy)");
+                EdgeLog("email.sender.unresolved",
+                    "dropped before Hermes (organization-only email policy)");
                 return;
             }
         }
         if (identified && emailCaller.tier == "outsider")
         {
-            EdgeLog("caller.refused", $"tier=outsider channel=email " +
-                                      $"email={emailCaller.email ?? "(none)"} oid={emailCaller.oid ?? "(none)"} " +
-                                      $"from={from}");
+            EdgeLog("caller.refused", "tier=outsider channel=email");
             return;
         }
 
@@ -787,7 +784,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         try
         {
             reply = await RunAsync(CallerSessionKey(turnContext),
-                Prompt($"You received an email from {Clean(from)}. Your final response text is "
+                Prompt($"You received an email from {Clean(senderName)}. Your final response text is "
                      + "automatically sent once as the native reply in the original email thread. "
                      + "To answer this current message, do NOT call send_email or reply_email; just "
                      + "return the reply body. You may use an email tool only when the sender "
@@ -1438,7 +1435,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             // "outsider" and let the sidecar refuse, rather than defaulting open.
             if (!string.IsNullOrEmpty(_agent?.EmailId))
                 req.Headers.TryAddWithoutValidation("X-Agent-Upn", _agent.EmailId);
-            EdgeLog("token.minted", $"len={graphToken.Length} upn={_agent?.EmailId ?? "(none)"}");
+            EdgeLog("token.minted", $"len={graphToken.Length}");
         }
         else
         {
@@ -1448,10 +1445,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             // only symptom downstream is the agent reporting "no agent credential present", which
             // says nothing about WHY. Report the shape of the failure out of band.
             EdgeLog("token.missing", $"helper={( _tokenHelper == null ? "null" : "ok")} "
-                                   + $"agent={(_agent == null ? "null" : "ok")} "
-                                   + $"appId={_agent?.AgentApplicationId.ToString() ?? "-"} "
-                                   + $"agentId={_agent?.AgentId.ToString() ?? "-"} "
-                                   + $"upn={_agent?.EmailId ?? "-"}");
+                                   + $"agent={(_agent == null ? "null" : "ok")}");
         }
         // ──────────────────────────────────────────────────────────────────────────────────────
 
@@ -1462,9 +1456,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         using var res = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
         if (!res.IsSuccessStatusCode)
         {
-            var errorBody = await res.Content.ReadAsStringAsync(ct);
-            EdgeLog("hermes.http.error",
-                $"{(int)res.StatusCode} {Clean(errorBody)?[..Math.Min(200, errorBody?.Length ?? 0)]}");
+            EdgeLog("hermes.http.error", $"status={(int)res.StatusCode}");
             return $"The gateway returned {(int)res.StatusCode}.";
         }
 
@@ -1709,11 +1701,11 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                         if (!string.IsNullOrWhiteSpace(v)) { email = Clean(v); break; }
                     }
                 }
-                EdgeLog("from.props", $"keys=[{string.Join(",", props.Keys)}] email={email ?? "(none)"}");
+                EdgeLog("from.props", $"count={props.Count} addressPresent={!string.IsNullOrWhiteSpace(email)}");
             }
             else EdgeLog("from.props", "none");
         }
-        catch (Exception ex) { EdgeLog("from.props.error", $"{ex.GetType().Name}: {ex.Message}"); }
+        catch (Exception ex) { EdgeLog("from.props.error", $"type={ex.GetType().Name}"); }
 
         var sb = new System.Text.StringBuilder();
         sb.Append("You are speaking with ");

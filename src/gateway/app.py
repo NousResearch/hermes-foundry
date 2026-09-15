@@ -330,7 +330,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
             log(f"[edge] hermes.stream.done | events={tools_seen} data_bytes={data_bytes}")
         except Exception as e:                  # noqa: BLE001 - client or upstream disconnected
-            log(f"[edge] hermes.stream.broken | {type(e).__name__}: {e} | "
+            log(f"[edge] hermes.stream.broken | type={type(e).__name__} | "
                 f"after {data_bytes} data bytes")
             # Headers and some chunks are already on the wire, so an ordinary error JSON document
             # would corrupt the SSE framing. If the edge is still connected, finish with a valid

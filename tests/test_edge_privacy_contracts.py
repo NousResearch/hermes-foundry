@@ -23,6 +23,23 @@ class EdgePrivacyContractTests(unittest.TestCase):
         self.assertNotIn("' :: ' + r[:300]", source)
         self.assertNotIn("traceback.print_exc", source)
 
+    def test_anonymous_bot_channels_are_not_treated_as_tenant_colleagues(self):
+        source = (
+            ROOT / "src/edge/AgentLogic/HermesRouter/HermesRouterAgentLogicService.cs"
+        ).read_text()
+        self.assertNotIn('|| string.Equals(ch, "directline"', source)
+        self.assertNotIn('|| string.Equals(ch, "webchat"', source)
+        self.assertIn("activityTenantId == _agent.TenantId", source)
+
+    def test_structural_turn_logs_exclude_person_and_conversation_fields(self):
+        source = (
+            ROOT / "src/edge/AgentLogic/HermesRouter/HermesRouterAgentLogicService.cs"
+        ).read_text()
+        self.assertNotIn('$"fromId=', source)
+        self.assertNotIn('$"fromName=', source)
+        self.assertNotIn('$"recipId=', source)
+        self.assertNotIn('$"conv=', source)
+
 
 if __name__ == "__main__":
     unittest.main()
