@@ -421,6 +421,42 @@ def _edge_log(stage: str, detail: str) -> None:
     threading.Thread(target=_send, daemon=True).start()
 
 
+_GRAPH_RETRYABLE_STATUS = {429, 503, 504}
+_GRAPH_IDEMPOTENT_METHODS = {"GET", "HEAD", "PUT", "DELETE"}
+
+
+def _retry_delay(headers, attempt: int, cap_seconds: float = 20) -> float:
+    """Return Graph's requested delay, or bounded exponential backoff.
+
+    Microsoft may return Retry-After as seconds or as an HTTP date. Never permit a service response
+    to hold a Foundry turn indefinitely; the caller's total attempt count remains bounded as well.
+    """
+    raw = (headers.get("Retry-After") if headers else None) or ""
+    try:
+        requested = float(raw)
+    except (TypeError, ValueError):
+        requested = 0
+        if raw:
+            try:
+                when = email.utils.parsedate_to_datetime(raw)
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=datetime.timezone.utc)
+                requested = max(
+                    0, (when - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+                )
+            except (TypeError, ValueError, OverflowError):
+                requested = 0
+    return min(requested, cap_seconds) or min(2 ** attempt, 8, cap_seconds)
+
+
+def _uncertain_mutation_error(code: int, detail: str) -> str:
+    return (
+        f"ERROR {code} from Graph: the mutating request was not automatically retried because "
+        "its outcome may be unknown and replaying it could duplicate an email, event, invitation, "
+        f"or permission. Verify the target state before retrying. {detail}"
+    )
+
+
 def _graph(method: str, path: str, body=None, raw_body: bool = False) -> str:
     """Single place for a Graph call, its retries, and its error handling.
 
@@ -450,9 +486,10 @@ def _graph(method: str, path: str, body=None, raw_body: bool = False) -> str:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
 
+    method = method.upper()
     attempts = 4
     for attempt in range(attempts):
-        req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 raw = r.read().decode("utf-8", "replace")
@@ -460,16 +497,12 @@ def _graph(method: str, path: str, body=None, raw_body: bool = False) -> str:
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:600]
 
-            if e.code in (429, 503, 504) and attempt < attempts - 1:
-                # Retry-After is authoritative when present; cap it so a long server-suggested wait
-                # cannot stall the whole turn, and fall back to exponential backoff when absent.
-                try:
-                    wait = float(e.headers.get("Retry-After") or 0)
-                except (TypeError, ValueError):
-                    wait = 0
-                wait = min(wait, 20) or min(2 ** attempt, 8)
-                time.sleep(wait)
-                continue
+            if e.code in _GRAPH_RETRYABLE_STATUS:
+                if method not in _GRAPH_IDEMPOTENT_METHODS:
+                    return _uncertain_mutation_error(e.code, detail)
+                if attempt < attempts - 1:
+                    time.sleep(_retry_delay(e.headers, attempt))
+                    continue
 
             if e.code == 401:
                 return (f"ERROR 401 from Graph: the agent credential was rejected or has expired. "
@@ -486,6 +519,13 @@ def _graph(method: str, path: str, body=None, raw_body: bool = False) -> str:
                         "NOTHING was created or changed; do not claim success. Verify the drive/item "
                         f"identifier and the Agent User's OneDrive availability. {detail}")
             return f"ERROR {e.code} from Graph: {detail}"
+        except (TimeoutError, urllib.error.URLError) as e:
+            if method in _GRAPH_IDEMPOTENT_METHODS and attempt < attempts - 1:
+                time.sleep(min(2 ** attempt, 8))
+                continue
+            if method not in _GRAPH_IDEMPOTENT_METHODS:
+                return _uncertain_mutation_error(0, f"{type(e).__name__}: {e}")
+            return f"ERROR calling Graph after {attempt + 1} attempts: {type(e).__name__}: {e}"
         except Exception as e:                                # noqa: BLE001 - surfaced to the model
             return f"ERROR calling Graph: {type(e).__name__}: {e}"
     return "ERROR: Graph call exhausted retries."
@@ -527,10 +567,15 @@ def _graph_bytes(method: str, path: str):
                         return r2.read(), None
                 except Exception as ex:                    # noqa: BLE001 - surfaced to the model
                     return None, f"ERROR fetching converted content: {type(ex).__name__}: {ex}"
-            if e.code in (429, 503, 504) and attempt < 2:
-                time.sleep(min(2 ** attempt, 8))
+            if e.code in _GRAPH_RETRYABLE_STATUS and attempt < 2:
+                time.sleep(_retry_delay(e.headers, attempt))
                 continue
             return None, f"ERROR {e.code} from Graph: {e.read().decode('utf-8', 'replace')[:400]}"
+        except (TimeoutError, urllib.error.URLError) as e:
+            if attempt < 2:
+                time.sleep(min(2 ** attempt, 8))
+                continue
+            return None, f"ERROR calling Graph after {attempt + 1} attempts: {type(e).__name__}: {e}"
         except Exception as e:                             # noqa: BLE001 - surfaced to the model
             return None, f"ERROR calling Graph: {type(e).__name__}: {e}"
     return None, "ERROR: Graph call exhausted retries."
@@ -557,17 +602,21 @@ def _graph_put_bytes(path: str, blob: bytes, if_match: str = "") -> str:
                 return raw or f"OK ({r.status})"
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:600]
-            if e.code in (429, 503, 504) and attempt < 3:
-                try:
-                    wait = float(e.headers.get("Retry-After") or 0)
-                except (TypeError, ValueError):
-                    wait = 0
-                time.sleep(min(wait, 20) or min(2 ** attempt, 8))
+            if e.code in (_GRAPH_RETRYABLE_STATUS | {423}) and attempt < 3:
+                time.sleep(_retry_delay(e.headers, attempt))
                 continue
             if e.code == 412:
                 return ("ERROR 412 from Graph: the Word document changed after it was downloaded. "
                         "Nothing was overwritten; read the latest version and retry the edit.")
+            if e.code == 423:
+                return ("ERROR 423 from Graph: the Word document remained locked after four "
+                        "bounded attempts. Nothing was overwritten; close active editors and retry.")
             return f"ERROR {e.code} from Graph: {detail}"
+        except (TimeoutError, urllib.error.URLError) as e:
+            if attempt < 3:
+                time.sleep(min(2 ** attempt, 8))
+                continue
+            return f"ERROR calling Graph after {attempt + 1} attempts: {type(e).__name__}: {e}"
         except Exception as e:                              # noqa: BLE001 - surfaced to the model
             return f"ERROR calling Graph: {type(e).__name__}: {e}"
     return "ERROR: Graph upload exhausted retries."
