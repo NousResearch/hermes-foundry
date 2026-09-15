@@ -104,6 +104,27 @@ mcp = FastMCP(
 # report failure to the model.
 _orig_tool = mcp.tool
 
+_TOOL_FAILURE_PREFIXES = (
+    "ERROR",
+    "ROUTINE NOT CHANGED",
+    "PERSON LOOKUP FAILED",
+    "EVENT NOT",
+    "NOTHING WAS SHARED",
+    "OWNER MEMORY COULD NOT",
+    "MEMORY NOT",
+    "FILE NOT",
+    "DOCX NOT",
+    "XLSX NOT",
+    "PPTX NOT",
+    "PDF NOT",
+    "SHARE FAILED",
+    "🔴",
+)
+
+
+def _tool_result_failed(result: str) -> bool:
+    return (result or "").lstrip().startswith(_TOOL_FAILURE_PREFIXES)
+
 
 def _logged_tool(*d_args, **d_kwargs):
     deco = _orig_tool(*d_args, **d_kwargs)
@@ -114,12 +135,14 @@ def _logged_tool(*d_args, **d_kwargs):
         def _done(t0, result):
             ms = int((time.monotonic() - t0) * 1000)
             r = result if isinstance(result, str) else str(result)
-            bad = r.lstrip().startswith(("ERROR", "🔴"))
+            bad = _tool_result_failed(r)
             # Results can contain document text, recipients, signed download URLs and Graph
             # diagnostics. The model receives the full result, but telemetry records only outcome
             # and size.
             print(f"[tool] {name} {'FAILED' if bad else 'ok'} in {ms}ms "
                   f"({len(r)} chars)", flush=True)
+            _edge_log("tool.outcome",
+                      f"name={name} status={'failed' if bad else 'ok'} durationMs={ms}")
             return result
 
         def _raised(t0, exc):
@@ -127,11 +150,14 @@ def _logged_tool(*d_args, **d_kwargs):
             # Exception messages and tracebacks from HTTP clients routinely embed URLs, request
             # bodies and bearer-token metadata. Preserve the failure class without those values.
             print(f"[tool] {name} RAISED in {ms}ms :: {type(exc).__name__}", flush=True)
+            _edge_log("tool.outcome",
+                      f"name={name} status=raised durationMs={ms} type={type(exc).__name__}")
 
         if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)
             async def inner(*a, **kw):
                 print(f"[tool] {name} start (args={sorted(kw)})", flush=True)
+                _edge_log("tool.start", f"name={name}")
                 t0 = time.monotonic()
                 try:
                     return _done(t0, await fn(*a, **kw))
@@ -142,6 +168,7 @@ def _logged_tool(*d_args, **d_kwargs):
             @functools.wraps(fn)
             def inner(*a, **kw):
                 print(f"[tool] {name} start (args={sorted(kw)})", flush=True)
+                _edge_log("tool.start", f"name={name}")
                 t0 = time.monotonic()
                 try:
                     return _done(t0, fn(*a, **kw))

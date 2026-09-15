@@ -119,6 +119,31 @@ class GraphOneDriveTests(unittest.TestCase):
         )
         self.assertEqual(result, '{"value":[]}')
 
+    def test_tool_outcomes_reach_telemetry_without_arguments_or_results(self):
+        with mock.patch.object(self.m, "_graph", return_value='{"value":[]}'), \
+             mock.patch.object(self.m, "_edge_log") as edge_log:
+            self.m.list_files(top=3)
+
+        edge_log.assert_has_calls([
+            mock.call("tool.start", "name=list_files"),
+            mock.call("tool.outcome", mock.ANY),
+        ])
+        outcome = edge_log.call_args_list[-1].args[1]
+        self.assertIn("name=list_files status=ok durationMs=", outcome)
+        self.assertNotIn('{"value":[]}', outcome)
+        self.assertNotIn("top=3", outcome)
+
+    def test_tool_failure_taxonomy_marks_truthful_terminal_results_failed(self):
+        for result in (
+            "EVENT NOT CREATED — nothing was scheduled",
+            "SHARE FAILED — the file was not shared",
+            "DOCX NOT CHANGED — item was locked",
+            "ROUTINE NOT CHANGED — owner capability missing",
+        ):
+            with self.subTest(result=result):
+                self.assertTrue(self.m._tool_result_failed(result))
+        self.assertFalse(self.m._tool_result_failed("EVENT CREATED"))
+
     def test_search_files_uses_graph_and_escapes_odata_query(self):
         with mock.patch.object(self.m, "_graph", return_value='{"value":[]}') as graph:
             result = self.m.search_files("John's plan", top=7)
