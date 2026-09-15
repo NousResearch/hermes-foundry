@@ -23,6 +23,7 @@ import asyncio
 import datetime
 import email.utils
 import functools
+import hashlib
 import inspect
 import ipaddress
 import os
@@ -1983,12 +1984,10 @@ def web_search(query: str, count: int = 8) -> str:
     if not q:
         return "ERROR: empty query"
 
-    # Log the QUERY, unlike every other tool here. The general rule is to log argument names only,
-    # because arguments hold mail bodies, recipients and file contents. A web-search query is not that
-    # class of data — it is about to be sent to Bing anyway — and without it this failure was
-    # undiagnosable: the model refused a query I could not see, while the identical query I typed by
-    # hand succeeded. Comparing the two is the whole diagnosis.
-    print(f"[web_search] query={q[:200]!r} model={os.environ.get('MODEL_DEPLOYMENT_NAME')}", flush=True)
+    # Search text can contain confidential project or customer information. A stable fingerprint
+    # allows repeated failures to be correlated without storing the query itself.
+    query_tag = hashlib.sha256(q.encode()).hexdigest()[:12]
+    print(f"[web_search] query_tag={query_tag} chars={len(q)}", flush=True)
 
     base = (os.environ.get("AZURE_FOUNDRY_BASE_URL") or "").rstrip("/")
     model = os.environ.get("MODEL_DEPLOYMENT_NAME") or "gpt-5-mini"
@@ -2051,8 +2050,8 @@ def web_search(query: str, count: int = 8) -> str:
                               f"{e.read()[:400].decode('utf-8', 'replace')}")
             except Exception as e:                            # noqa: BLE001 - retried, then surfaced
                 last = e
-                print(f"[web_search] attempt {attempt + 1}/3 network failure: "
-                      f"{type(e).__name__}: {e}", flush=True)
+                print(f"[web_search] query_tag={query_tag} attempt={attempt + 1}/3 "
+                      f"network_failure={type(e).__name__}", flush=True)
                 if attempt < 2:
                     time.sleep(2 * (attempt + 1))
         return None, (f"ERROR calling Foundry web search after 3 attempts: {type(last).__name__}: "
@@ -2492,7 +2491,7 @@ def _spool_attachment(data: bytes, name: str, mime: str) -> str:
         "Content-Type": "application/json",
         **({"Authorization": f"Bearer {_TOKEN_KEY}"} if _TOKEN_KEY else {})})
     urllib.request.urlopen(req, timeout=15).read()
-    _edge_log("attach.spool", f"{mime} {len(data)}B -> {path}")
+    _edge_log("attach.spool", f"mime={mime} bytes={len(data)}")
     return path
 
 
@@ -2583,7 +2582,7 @@ async def screenshot_url(url: str, full_page: bool = False,
                                     shot, raw_body=True))
         if isinstance(res, str) and res.startswith("ERROR"):
             # Never let the agent claim a file exists that does not. Same rule the document tools use.
-            _edge_log("screenshot.onedrive.failed", res[:200])
+            _edge_log("screenshot.onedrive.failed", "Graph write failed")
             drive_note = (f"\n\nThe full-resolution copy was NOT saved to OneDrive and does not "
                           f"exist -- do not tell anyone it does. {res}")
         else:
@@ -2606,7 +2605,7 @@ async def screenshot_url(url: str, full_page: bool = False,
     except Exception as e:                                    # noqa: BLE001 - surfaced to the model
         # The picture exists but nothing will carry it. Say so rather than letting the agent claim
         # it attached something the person will never see.
-        _edge_log("attach.failed", f"{type(e).__name__}: {e}")
+        _edge_log("attach.failed", f"type={type(e).__name__}")
         return (f"Captured {url} but could NOT attach the image ({type(e).__name__}). Tell the "
                 f"person the screenshot could not be delivered to the chat, and describe the page "
                 f"instead.{drive_note}")

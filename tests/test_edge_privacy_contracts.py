@@ -22,6 +22,8 @@ class EdgePrivacyContractTests(unittest.TestCase):
         source = (ROOT / "src/sidecar/agent365_mcp.py").read_text()
         self.assertNotIn("' :: ' + r[:300]", source)
         self.assertNotIn("traceback.print_exc", source)
+        self.assertNotIn("[web_search] query={", source)
+        self.assertNotIn('-> {path}', source)
 
     def test_anonymous_bot_channels_are_not_treated_as_tenant_colleagues(self):
         source = (
