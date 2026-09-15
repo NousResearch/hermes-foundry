@@ -289,7 +289,10 @@ def _ship(message: str, level: int = 1):
             }).encode()
             req = urllib.request.Request(_AI_URL, data=body,
                                         headers={"Content-Type": "application/json"})
-            urllib.request.urlopen(req, timeout=10).read()
+            with urllib.request.urlopen(req, timeout=10) as response:
+                response.read()
+        except urllib.error.HTTPError as error:
+            error.close()
         except Exception:
             pass                                              # diagnostics must never break a turn
 
@@ -621,10 +624,14 @@ class Handler(BaseHTTPRequestHandler):
                 except urllib.error.HTTPError as e:
                     # Upstream error bodies may contain model output, request details or signed
                     # URLs. Keep them out of telemetry and return a stable public error instead.
-                    e.read()
-                    log(f"[edge] hermes.error | status={e.code}")
-                    self._send(e.code, json.dumps({
-                        "error": f"Hermes returned HTTP {e.code}."
+                    code = e.code
+                    try:
+                        e.read(4096)
+                    finally:
+                        e.close()
+                    log(f"[edge] hermes.error | status={code}")
+                    self._send(code, json.dumps({
+                        "error": f"Hermes returned HTTP {code}."
                     }).encode())
                     return
                 except Exception as e:

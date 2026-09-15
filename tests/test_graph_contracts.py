@@ -144,12 +144,14 @@ class GraphContractTests(unittest.TestCase):
         self.assertIn("System fault, not a user problem", result)
 
     def test_403_explains_both_permission_layers(self):
+        error = _http_error(403)
         with mock.patch.object(self.m, "_token", return_value="token"), \
              mock.patch.object(self.m.urllib.request, "urlopen",
-                               side_effect=_http_error(403)) as urlopen:
+                               side_effect=error) as urlopen:
             result = self.m._graph("GET", "me/messages")
 
         self.assertEqual(urlopen.call_count, 1)
+        self.assertTrue(error.closed)
         self.assertIn("consent grant", result)
         self.assertIn("inheritablePermissions", result)
 

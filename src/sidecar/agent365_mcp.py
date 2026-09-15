@@ -36,6 +36,18 @@ import urllib.request
 
 from mcp.server.fastmcp import FastMCP
 
+
+def _http_error_body(error: urllib.error.HTTPError, limit: int = 4096) -> bytes:
+    """Read a bounded HTTP error body and always release its response handle."""
+    try:
+        return error.read(limit)
+    finally:
+        error.close()
+
+
+def _http_error_text(error: urllib.error.HTTPError, limit: int = 4096) -> str:
+    return _http_error_body(error, limit).decode("utf-8", "replace")
+
 GRAPH = "https://graph.microsoft.com/v1.0"
 # Minted per turn by the edge and refreshed on every turn, so a long-lived sandbox never holds a
 # stale credential. Read lazily (not captured at import) so a relaunch picks up the new value.
@@ -327,6 +339,9 @@ def _token() -> str:
         if tok:
             _token_cache.update(tok=tok, at=now)
         return tok
+    except urllib.error.HTTPError as error:
+        error.close()
+        return _token_cache["tok"]
     except Exception:
         # Fall back to whatever we last held; a stale token produces a clean 401 from Graph, which
         # is a better failure than pretending we have no credential at all.
@@ -353,6 +368,9 @@ def _caller_tier() -> str:
         with urllib.request.urlopen(req, timeout=15) as r:
             tier = str((json.loads(r.read()) or {}).get("tier", "outsider")).strip().lower()
         return tier if tier in {"owner", "colleague", "outsider"} else "outsider"
+    except urllib.error.HTTPError as error:
+        error.close()
+        return "outsider"
     except Exception:
         return "outsider"
 
@@ -372,6 +390,9 @@ def _routine_capability() -> str:
             req.add_header("Authorization", f"Bearer {_TOKEN_KEY}")
         with urllib.request.urlopen(req, timeout=15) as r:
             return str((json.loads(r.read()) or {}).get("routine_capability") or "")
+    except urllib.error.HTTPError as error:
+        error.close()
+        return ""
     except Exception:
         return ""
 
@@ -397,7 +418,7 @@ def _routine_control(operation: str, payload: dict) -> str:
             result = json.loads(r.read() or b"{}")
         return str(result.get("message") or result)
     except urllib.error.HTTPError as e:
-        raw = e.read().decode("utf-8", "replace")
+        raw = _http_error_text(e)
         try:
             result = json.loads(raw or "{}")
             detail = result.get("message") or result.get("error") or raw
@@ -451,7 +472,10 @@ def _edge_log(stage: str, detail: str) -> None:
             req = urllib.request.Request(f"{_TOKEN_URL}/v1/edge-log", data=body,
                                          headers={"Content-Type": "application/json",
                                                   **({"Authorization": f"Bearer {_TOKEN_KEY}"} if _TOKEN_KEY else {})})
-            urllib.request.urlopen(req, timeout=10).read()
+            with urllib.request.urlopen(req, timeout=10) as response:
+                response.read()
+        except urllib.error.HTTPError as error:
+            error.close()
         except Exception:
             pass
 
@@ -597,7 +621,7 @@ def _graph(method: str, path: str, body=None, raw_body: bool = False) -> str:
                 raw = r.read().decode("utf-8", "replace")
                 return raw or f"OK ({r.status})"
         except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")[:600]
+            detail = _http_error_text(e, 600)
 
             if e.code in _GRAPH_RETRYABLE_STATUS:
                 if method not in _GRAPH_IDEMPOTENT_METHODS:
@@ -663,19 +687,27 @@ def _graph_bytes(method: str, path: str):
             with opener.open(req, timeout=120) as r:
                 return r.read(), None
         except urllib.error.HTTPError as e:
-            if e.code in (301, 302, 303, 307, 308):
-                loc = e.headers.get("Location")
+            code = e.code
+            headers = e.headers
+            if code in (301, 302, 303, 307, 308):
+                loc = headers.get("Location")
+                e.close()
                 if not loc:
                     return None, "ERROR: Graph redirected without a Location header."
                 try:
                     with urllib.request.urlopen(loc, timeout=120) as r2:   # deliberately unauthenticated
                         return r2.read(), None
+                except urllib.error.HTTPError as ex:
+                    code = ex.code
+                    ex.close()
+                    return None, f"ERROR fetching converted content: HTTPError: HTTP {code}"
                 except Exception as ex:                    # noqa: BLE001 - surfaced to the model
                     return None, f"ERROR fetching converted content: {type(ex).__name__}: {ex}"
-            if e.code in _GRAPH_RETRYABLE_STATUS and attempt < 2:
-                time.sleep(_retry_delay(e.headers, attempt))
+            detail = _http_error_text(e, 400)
+            if code in _GRAPH_RETRYABLE_STATUS and attempt < 2:
+                time.sleep(_retry_delay(headers, attempt))
                 continue
-            return None, f"ERROR {e.code} from Graph: {e.read().decode('utf-8', 'replace')[:400]}"
+            return None, f"ERROR {code} from Graph: {detail}"
         except (TimeoutError, urllib.error.URLError) as e:
             if attempt < 2:
                 time.sleep(min(2 ** attempt, 8))
@@ -712,17 +744,19 @@ def _graph_put_bytes(path: str, blob: bytes, if_match: str = "") -> str:
                 raw = r.read().decode("utf-8", "replace")
                 return raw or f"OK ({r.status})"
         except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")[:600]
-            if e.code in (_GRAPH_RETRYABLE_STATUS | {423}) and attempt < 3:
-                time.sleep(_retry_delay(e.headers, attempt))
+            code = e.code
+            headers = e.headers
+            detail = _http_error_text(e, 600)
+            if code in (_GRAPH_RETRYABLE_STATUS | {423}) and attempt < 3:
+                time.sleep(_retry_delay(headers, attempt))
                 continue
-            if e.code == 412:
+            if code == 412:
                 return ("ERROR 412 from Graph: the Word document changed after it was downloaded. "
                         "Nothing was overwritten; read the latest version and retry the edit.")
-            if e.code == 423:
+            if code == 423:
                 return ("ERROR 423 from Graph: the Word document remained locked after four "
                         "bounded attempts. Nothing was overwritten; close active editors and retry.")
-            return f"ERROR {e.code} from Graph: {detail}"
+            return f"ERROR {code} from Graph: {detail}"
         except (TimeoutError, urllib.error.URLError) as e:
             if attempt < 3:
                 time.sleep(min(2 ** attempt, 8))
@@ -1976,8 +2010,13 @@ def _managed_identity_token(resource: str) -> str:
     encoded = urllib.parse.quote(resource, safe="")
     url = f"{ep}?resource={encoded}&api-version=2019-08-01"
     req = urllib.request.Request(url, headers={"X-IDENTITY-HEADER": hdr})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read())["access_token"]
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read())["access_token"]
+    except urllib.error.HTTPError as error:
+        code = error.code
+        error.close()
+        raise RuntimeError(f"managed identity token endpoint returned HTTP {code}") from None
 
 
 def _foundry_token() -> str:
@@ -2082,8 +2121,9 @@ def web_search(query: str, count: int = 8) -> str:
                 with urllib.request.urlopen(r, timeout=120) as resp:
                     return json.loads(resp.read()), None
             except urllib.error.HTTPError as e:
-                return None, (f"ERROR {e.code} from Foundry web search: "
-                              f"{e.read()[:400].decode('utf-8', 'replace')}")
+                code = e.code
+                detail = _http_error_text(e, 400)
+                return None, f"ERROR {code} from Foundry web search: {detail}"
             except Exception as e:                            # noqa: BLE001 - retried, then surfaced
                 last = e
                 print(f"[web_search] query_tag={query_tag} attempt={attempt + 1}/3 "
@@ -2249,8 +2289,13 @@ def _toolbox_call(toolbox: str, version: str, tool_name: str, arguments: dict, t
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
     })
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        raw = r.read().decode("utf-8", "replace")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as error:
+        code = error.code
+        detail = _http_error_text(error, 300)
+        raise RuntimeError(f"toolbox returned HTTP {code}: {detail}") from None
     doc = None
     if raw.lstrip().startswith("{"):
         doc = json.loads(raw)
@@ -2369,15 +2414,18 @@ async def browse_url(url: str, max_chars: int = 20000) -> str:
         # the owner "ERROR provisioning browser: HTTPError: HTTP Error 404: Not Found", which named
         # neither the cause nor the fix, and the friendly branch below never matched because the word
         # "toolbox" only appears in the body.
-        detail = ""
-        try: detail = e.read().decode("utf-8", "replace")[:300]
-        except Exception: pass
-        if e.code == 404:
+        code = e.code
+        try:
+            detail = _http_error_text(e, 300)
+        except Exception:
+            e.close()
+            detail = ""
+        if code == 404:
             return ("ERROR: this project has no Browser Automation toolbox, so there is no hosted "
                     "browser to drive. That is a SETUP GAP on this stack, not something to retry. "
                     "Say so plainly and use fetch_url instead, noting it cannot see anything the page "
-                    f"renders with JavaScript. ({e.code}: {detail})")
-        return f"ERROR provisioning browser: HTTP {e.code}: {detail}"
+                    f"renders with JavaScript. ({code}: {detail})")
+        return f"ERROR provisioning browser: HTTP {code}: {detail}"
     except Exception as e:                                    # noqa: BLE001 - surfaced to the model
         msg = f"{type(e).__name__}: {e}"
         if "not found" in msg.lower() and "toolbox" in msg.lower():
@@ -2526,7 +2574,13 @@ def _spool_attachment(data: bytes, name: str, mime: str) -> str:
     req = urllib.request.Request(f"{_TOKEN_URL}/v1/attach", data=body, headers={
         "Content-Type": "application/json",
         **({"Authorization": f"Bearer {_TOKEN_KEY}"} if _TOKEN_KEY else {})})
-    urllib.request.urlopen(req, timeout=15).read()
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            response.read()
+    except urllib.error.HTTPError as error:
+        code = error.code
+        error.close()
+        raise RuntimeError(f"attachment registration returned HTTP {code}") from None
     _edge_log("attach.spool", f"mime={mime} bytes={len(data)}")
     return path
 
@@ -2571,14 +2625,17 @@ async def screenshot_url(url: str, full_page: bool = False,
     try:
         cdp = await loop.run_in_executor(None, _browser_cdp_url)
     except urllib.error.HTTPError as e:
-        detail = ""
-        try: detail = e.read().decode("utf-8", "replace")[:300]
-        except Exception: pass
-        if e.code == 404:
+        code = e.code
+        try:
+            detail = _http_error_text(e, 300)
+        except Exception:
+            e.close()
+            detail = ""
+        if code == 404:
             return ("ERROR: this project has no Browser Automation toolbox, so there is no hosted "
                     "browser to screenshot with. That is a SETUP GAP on this stack, not something to "
                     f"retry. Say so plainly rather than describing the page from memory. ({detail})")
-        return f"ERROR provisioning browser: HTTP {e.code}: {detail}"
+        return f"ERROR provisioning browser: HTTP {code}: {detail}"
     except Exception as e:                                    # noqa: BLE001 - surfaced to the model
         return f"ERROR provisioning browser: {type(e).__name__}: {e}"
 
@@ -2689,11 +2746,13 @@ def fetch_url(url: str, max_chars: int = 20000) -> str:
         # user, when the tool that WOULD have worked is sitting right there: browse_url drives a real
         # Chromium, which is exactly what bot-protected and JavaScript-rendered pages need. This
         # happened live on 2026-08-17 -- a 403 from a recipe site ended the task instead of escalating.
-        if e.code in (401, 403, 406, 429, 503):
-            return (f"ERROR {e.code} fetching {url} — the site refused a plain HTTP client "
+        code = e.code
+        e.close()
+        if code in (401, 403, 406, 429, 503):
+            return (f"ERROR {code} fetching {url} — the site refused a plain HTTP client "
                     f"(bot protection or JavaScript-only). RETRY THIS URL WITH browse_url, which "
                     f"drives a real browser and normally succeeds where this fails.")
-        return f"ERROR {e.code} fetching {url}"
+        return f"ERROR {code} fetching {url}"
     except Exception as e:                                    # noqa: BLE001 - surfaced to the model
         return f"ERROR fetching {url}: {type(e).__name__}: {e}"
 
