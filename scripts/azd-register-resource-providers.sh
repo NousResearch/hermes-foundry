@@ -18,6 +18,11 @@ for provider in "${providers[@]}"; do
     continue
   fi
 
+  if [[ "${HERMES_PROVISION_MODE:-apply}" == "preview" ]]; then
+    printf '%s is not registered (preview only; no change made).\n' "$provider"
+    continue
+  fi
+
   printf 'Registering %s...\n' "$provider"
   az provider register --namespace "$provider" --wait --output none
 done

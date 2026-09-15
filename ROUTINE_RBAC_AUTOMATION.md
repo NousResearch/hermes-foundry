@@ -175,16 +175,27 @@ need for polling, but no such event is used by this implementation.
 
 ## Remove the automation
 
+First generate a read-only, target-verified removal plan:
+
 ```bash
 ./scripts/remove-agent-rbac-automation.sh \
+  --subscription <subscription-id> \
   --resource-group <resource-group> \
   --account <foundry-account> \
-  --project <foundry-project>
+  --project <foundry-project> \
+  --blueprint-client-id <blueprint-client-id>
 ```
 
-Removal deletes the Logic App and its constrained project delegation. It deliberately leaves
-Foundry User assignments already created for Agent Identities, avoiding a surprise outage for
-existing agents. Removing those assignments is a separate explicit administrator decision.
+The plan verifies the active subscription, Foundry project, Logic App, and configured blueprint. It
+does not change Azure. After reviewing it, repeat the same command with:
+
+```text
+--execute --confirm-workflow-name hermes-agent-foundry-role-sync
+```
+
+Execution deletes the verified Logic App and its constrained project delegation. It deliberately
+leaves Foundry User assignments already created for Agent Identities, avoiding a surprise outage
+for existing agents. Removing those assignments is a separate explicit administrator decision.
 
 ## Microsoft references
 

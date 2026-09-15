@@ -328,6 +328,9 @@ main() {
   export AZURE_TENANT_ID="$CUSTOMER_TENANT_ID"
   export AZURE_SUBSCRIPTION_ID
   export AZD_SKIP_FIRST_RUN=true
+  # azd executes preprovision hooks even while preparing some previews. Pass the requested mode to
+  # every hook so --preview cannot quietly register providers or perform another tenant mutation.
+  export HERMES_PROVISION_MODE="$PROVISION_MODE"
 
   info "Authentication is ready for tenant ${CUSTOMER_TENANT_ID}."
 

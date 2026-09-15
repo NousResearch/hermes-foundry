@@ -18,7 +18,8 @@ distribution. It intentionally excludes tenant-specific deployment state and int
 - Accept tenant and resource coordinates only as installer inputs; keep defaults tenant-neutral.
 - Validate regional model quota and required Azure roles before provisioning.
 - Print a deployment summary that redacts secrets and security-sensitive identifiers.
-- Provide matching validation and uninstall commands.
+- Keep deployment validation and guarded routine-automation removal commands covered by tests; add
+  a complete hosted-agent uninstall only after Microsoft 365 instance lifecycle can be verified.
 - Research a supported tenant-admin API for setting an Agent Identity Blueprint to **Bot Based** and
   assigning its Bot ID. Until Microsoft documents one, keep the exact post-install Developer Portal
   action visible and blocking rather than calling its private portal endpoint from automation.
