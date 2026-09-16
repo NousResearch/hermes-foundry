@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using AgentNotification;
 using HelloWorldA365.Models;
+using HelloWorldA365.Services;
 using Microsoft.Agents.A365.Notifications.Models;
 using Microsoft.Agents.Builder;
 using Microsoft.Agents.Builder.State;
@@ -50,15 +51,18 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     private readonly Microsoft.Agents.Builder.App.UserAuth.UserAuthorization _userAuth;
     private readonly HelloWorldA365.Services.RoutineBindingService _routineBindings;
     private readonly HelloWorldA365.Services.ModelPolicyService? _modelPolicy;
+    private readonly OneDriveEmailDeduplicationService? _emailDeduplication;
 
     /// <summary>
-    /// One inbound email must produce at most ONE outbound reply, for the lifetime of the process.
+    /// Fast in-process fallback for email deduplication.
     ///
     /// Agent 365 delivery is at-least-once: the same notification is redelivered when a turn is slow
     /// or a send is retried. Every redelivery previously sent another reply, so a single email could
     /// produce four or five near-identical outbound messages — which is what Exchange's outbound spam
-    /// heuristics flagged on 2026-08-05 ("will be restricted if this activity continues"). Losing the
-    /// agent's mailbox to a sending restriction is a far worse failure than dropping a duplicate.
+    /// heuristics flagged on 2026-08-05 ("will be restricted if this activity continues"). Durable
+    /// cross-session claims now live in the Agent User's OneDrive app folder; this dictionary still
+    /// protects the process if OneDrive is temporarily unavailable. Losing the agent's mailbox to a
+    /// sending restriction is a far worse failure than dropping a duplicate.
     /// </summary>
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _repliedTo = new();
     private static DateTime _nextSweepUtc = DateTime.UtcNow.AddMinutes(10);
@@ -77,11 +81,18 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         return !_repliedTo.TryAdd(key, now);
     }
 
+    private static void ForgetReply(string key)
+    {
+        if (!string.IsNullOrEmpty(key))
+            _repliedTo.TryRemove(key, out _);
+    }
+
     public HermesRouterAgentLogicService(AgentMetadata agent, IConfiguration config, ILogger logger,
         HelloWorldA365.Services.AgentTokenHelper tokenHelper = null,
         Microsoft.Agents.Builder.App.UserAuth.UserAuthorization userAuth = null,
         HelloWorldA365.Services.RoutineBindingService routineBindings = null,
-        HelloWorldA365.Services.ModelPolicyService? modelPolicy = null)
+        HelloWorldA365.Services.ModelPolicyService? modelPolicy = null,
+        OneDriveEmailDeduplicationService? emailDeduplication = null)
     {
         _userAuth = userAuth;
         _agent = agent;
@@ -89,6 +100,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         _tokenHelper = tokenHelper;
         _routineBindings = routineBindings;
         _modelPolicy = modelPolicy;
+        _emailDeduplication = emailDeduplication;
         _routerUrl = (config["RouterUrl"] ?? "").TrimEnd('/');
         _routerKey = config["RouterKey"] ?? "";
         _ownerUpn = (config["AgentOwnerUpn"] ?? "").Trim();
@@ -738,30 +750,64 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             return;
         }
 
+        // Agent 365 notifications are at-least-once and can be redelivered into another Foundry
+        // session. Claim the mailbox message in this Agent User's OneDrive app folder before doing
+        // work. The raw message ID is hashed by the service and never becomes a file name or log.
+        // If Graph is temporarily unavailable, retain the old in-process protection rather than
+        // making all inbound email unavailable.
+        var dedupeId = turnContext.Activity.Id ?? "";
+        var memoryDedupeKey = string.IsNullOrWhiteSpace(dedupeId)
+            ? ""
+            : $"{AgentKey(turnContext)}:{dedupeId}";
+        var dedupeToken = "";
+        var durableClaim = new EmailDeduplicationClaim(EmailClaimDisposition.Unavailable);
+        if (_emailDeduplication is not null && !string.IsNullOrWhiteSpace(dedupeId))
+        {
+            dedupeToken = await MintAgentGraphTokenAsync() ?? "";
+            if (!string.IsNullOrWhiteSpace(dedupeToken))
+            {
+                durableClaim = await _emailDeduplication.TryAcquireAsync(
+                    dedupeToken,
+                    dedupeId,
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None);
+                if (durableClaim.Disposition == EmailClaimDisposition.Duplicate)
+                {
+                    EdgeLog("email.duplicate.suppressed", "durable Agent User marker exists");
+                    return;
+                }
+            }
+        }
+
+        if (AlreadyReplied(memoryDedupeKey))
+        {
+            // A durable claim acquired by this delivery is no longer needed if another in-process
+            // worker won first. Release it so a future legitimate retry is not stranded.
+            if (durableClaim.Disposition == EmailClaimDisposition.Acquired)
+                await _emailDeduplication!.ReleaseAsync(
+                    dedupeToken, durableClaim, CancellationToken.None);
+            EdgeLog("email.duplicate.suppressed", "in-process notification redelivered");
+            return;
+        }
+
         if (IsHermesAgentAddress(emailCaller.email))
         {
-            var blockedKey = turnContext.Activity.Id ?? turnContext.Activity.Conversation?.Id;
-            if (!AlreadyReplied(blockedKey))
+            if (await SealEmailClaimAsync(
+                    dedupeToken, durableClaim, memoryDedupeKey, CancellationToken.None))
             {
                 await turnContext.SendActivityAsync(
                     turnContext.Activity.CreateEmailResponseActivity(AgentToAgentDisabledMessage));
                 EdgeLog("agent.to.agent.blocked", "channel=email");
+                await CleanupEmailClaimsAsync(dedupeToken, durableClaim, CancellationToken.None);
             }
-            else EdgeLog("email.duplicate.suppressed", "agent-to-agent notification redelivered");
-            return;
-        }
-
-        // Suppress redeliveries BEFORE doing any work — see AlreadyReplied.
-        var dedupeKey = turnContext.Activity.Id ?? turnContext.Activity.Conversation?.Id;
-        if (AlreadyReplied(dedupeKey))
-        {
-            EdgeLog("email.duplicate.suppressed", "notification redelivered");
             return;
         }
         if (string.IsNullOrWhiteSpace(body))
         {
             // Deliberately silent. Mailing "I couldn't read your email" back is an outbound message
             // that helps nobody and counts against the mailbox's sending reputation.
+            await SealEmailClaimAsync(
+                dedupeToken, durableClaim, memoryDedupeKey, CancellationToken.None);
             EdgeLog("email.empty.body", "no reply sent");
             return;
         }
@@ -796,8 +842,20 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             // recipient anyway.
             _logger.LogError("Hermes email turn failed; type={ExceptionType}", ex.GetType().Name);
             EdgeLog("email.turn.FAILED", $"type={ex.GetType().Name}");
+            ForgetReply(memoryDedupeKey);
+            if (durableClaim.Disposition == EmailClaimDisposition.Acquired)
+                await _emailDeduplication!.ReleaseAsync(
+                    dedupeToken, durableClaim, CancellationToken.None);
             return;
         }
+
+        // Seal BEFORE attempting the outbound Activity. This intentionally preserves the existing
+        // at-most-once policy: if the channel send has an uncertain outcome, a redelivery must not
+        // send a second reply and risk mailbox restrictions. If the seal itself cannot be written,
+        // leave the pending lease and let a later delivery retry instead of sending unprotected.
+        if (!await SealEmailClaimAsync(
+                dedupeToken, durableClaim, memoryDedupeKey, CancellationToken.None))
+            return;
         try
         {
             // FUTURE DESIGN OPTION: treat inbound email only as an event and do not automatically
@@ -810,12 +868,44 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             // Hermes from independently sending a duplicate.
             await turnContext.SendActivityAsync(turnContext.Activity.CreateEmailResponseActivity(reply));
             EdgeLog("email.replied", $"chars={reply?.Length ?? 0}");
+            await CleanupEmailClaimsAsync(dedupeToken, durableClaim, CancellationToken.None);
         }
         catch (Exception ex)
         {
             EdgeLog("email.reply.FAILED", $"type={ex.GetType().Name}");
             throw;
         }
+    }
+
+    private async Task<bool> SealEmailClaimAsync(
+        string accessToken,
+        EmailDeduplicationClaim claim,
+        string memoryDedupeKey,
+        CancellationToken cancellationToken)
+    {
+        if (claim.Disposition != EmailClaimDisposition.Acquired)
+            return true;
+        if (_emailDeduplication is not null
+            && await _emailDeduplication.CompleteAsync(
+                accessToken, claim, cancellationToken))
+            return true;
+
+        ForgetReply(memoryDedupeKey);
+        EdgeLog("email.dedupe.seal.FAILED", "reply not attempted; pending lease retained");
+        return false;
+    }
+
+    private async Task CleanupEmailClaimsAsync(
+        string accessToken,
+        EmailDeduplicationClaim claim,
+        CancellationToken cancellationToken)
+    {
+        if (_emailDeduplication is null
+            || claim.Disposition != EmailClaimDisposition.Acquired
+            || string.IsNullOrWhiteSpace(accessToken))
+            return;
+        await _emailDeduplication.CleanupAsync(
+            accessToken, claim.AppRootId, DateTimeOffset.UtcNow, cancellationToken);
     }
 
     public async Task HandleCommentNotificationAsync(ITurnContext turnContext, ITurnState turnState,

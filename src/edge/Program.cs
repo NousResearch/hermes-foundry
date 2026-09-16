@@ -98,6 +98,7 @@ builder.Services.AddTokenAcquisition(isTokenAcquisitionSingleton: true);
 builder.Services.AddInMemoryTokenCaches();
 builder.Services.AddAgentIdentities();
 builder.Services.AddSingleton<AgentUserAuthorizationService>();
+builder.Services.AddSingleton<OneDriveEmailDeduplicationService>();
 // Project-scoped model inventory and per-caller Teams model selection. The service only enumerates
 // existing Foundry deployments; it cannot deploy a model or expand anybody's Azure permissions.
 builder.Services.AddSingleton<ModelPolicyService>();

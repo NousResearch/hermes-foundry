@@ -278,6 +278,12 @@ Owner-approved long-term memory is stored in the Agent User's own OneDrive throu
 `recall`. Caller-scoped `/model` preferences are stored on the persisted Hermes state volume using a
 one-way hash of the conversation key.
 
+Inbound email delivery claims are also persisted per Agent User, in that identity's OneDrive app
+folder. Atomic marker creation prevents two Foundry sessions from answering the same notification;
+the marker contains only a one-way hash of the message ID, never the sender, subject, body, or raw
+message ID. Abandoned claims can be recovered after 30 minutes, and completed markers are retained
+for eight days before bounded cleanup.
+
 ## Microsoft 365 access
 
 The sidecar exposes Microsoft 365 tools using the agent's own identity. Graph-backed tools cover

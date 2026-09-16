@@ -18,7 +18,8 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
     ILogger<ResponsesApiAgentLogicServiceFactory> logger,
     AgentTokenHelper tokenHelper,
     RoutineBindingService routineBindings,
-    ModelPolicyService modelPolicy)
+    ModelPolicyService modelPolicy,
+    OneDriveEmailDeduplicationService emailDeduplication)
 {
     private static readonly HttpClient HttpClient = new();
 
@@ -37,7 +38,7 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
                 "Using the Hermes router for the current agent instance");
             return new HermesRouter.HermesRouterAgentLogicService(
                 agent, configuration, logger, tokenHelper, userAuthorization, routineBindings,
-                modelPolicy);
+                modelPolicy, emailDeduplication);
         }
 
         // LOGGING ONLY. These are the ids on a turn that DEMONSTRABLY works — the stock path that
