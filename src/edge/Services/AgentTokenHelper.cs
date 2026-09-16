@@ -94,12 +94,19 @@ public class AgentTokenHelper(ILogger<AgentTokenHelper> logger)
         }
 
         var content = new FormUrlEncodedContent(parameters);
-        var response = await httpClient.PostAsync(tokenEndpoint, content);
+        using var response = await httpClient.PostAsync(tokenEndpoint, content);
 
         if (!response.IsSuccessStatusCode)
         {
-            var errorContent = await response.Content.ReadAsStringAsync();
-            throw new InvalidOperationException($"Failed to acquire user federated identity token: {errorContent}");
+            // Entra error bodies can contain tenant, user, assertion-subject, trace and correlation
+            // identifiers. Exceptions may be logged by framework middleware outside our redacted
+            // handlers, so never embed the response body in one. The HTTP status is sufficient for
+            // the caller-visible failure; server-side identity diagnostics remain content-free.
+            logger.LogWarning(
+                "Agent User token acquisition failed; status={StatusCode}",
+                (int)response.StatusCode);
+            throw new InvalidOperationException(
+                $"Failed to acquire Agent User token; Entra returned HTTP {(int)response.StatusCode}.");
         }
 
         var responseContent = await response.Content.ReadAsStringAsync();

@@ -111,6 +111,13 @@ class EdgePrivacyContractTests(unittest.TestCase):
         self.assertNotIn("{AgentUserId}", obo)
         self.assertIn("oid_tag={ObjectIdTag}", routine)
 
+    def test_agent_token_errors_do_not_embed_entra_response_bodies(self):
+        helper = (ROOT / "src/edge/Services/AgentTokenHelper.cs").read_text()
+        self.assertNotIn("errorContent", helper)
+        self.assertNotIn("{responseContent}", helper)
+        self.assertIn("Entra returned HTTP", helper)
+        self.assertIn("using var response =", helper)
+
     def test_activity_and_routine_paths_forward_safe_correlation(self):
         activity = (
             ROOT / "src/edge/AgentLogic/HermesRouter/HermesRouterAgentLogicService.cs"
