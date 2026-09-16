@@ -299,10 +299,8 @@ def read_uploaded_file(path: str, max_chars: int = 60000) -> str:
                 "The file was not reviewed.")
 
 
-_token_cache = {"tok": "", "at": 0.0}
 _TOKEN_URL = os.environ.get("AGENT_TOKEN_URL", "").rstrip("/")
 _TOKEN_KEY = os.environ.get("AGENT_TOKEN_KEY", "")
-_TOKEN_TTL = float(os.environ.get("AGENT_TOKEN_TTL", "60"))
 _ROUTINE_CONTROL_URL = os.environ.get(
     "ROUTINE_CONTROL_URL", "http://127.0.0.1:8088/internal/routines"
 ).rstrip("/")
@@ -319,33 +317,27 @@ def _token() -> str:
        rather than a per-turn process, because an env var captured at start goes stale in an hour
        and there is no relaunch to refresh it.
 
-    The token is deliberately never persisted to disk and never held longer than its TTL. It is a
-    user token for the AGENT; a standing copy of it is exactly the credential the design avoids.
+    The token is deliberately never persisted or cached here. The gateway erases turn authority as
+    soon as the turn ends, and polling it for every Graph operation makes that erasure effective in
+    the sidecar too. Retaining the previous token after a 404 or transport failure would silently
+    turn a per-turn credential into a standing credential.
     """
     env_tok = os.environ.get(_TOKEN_ENV, "")
     if env_tok:
         return env_tok
     if not _TOKEN_URL:
         return ""
-    now = time.time()
-    if _token_cache["tok"] and (now - _token_cache["at"]) < _TOKEN_TTL:
-        return _token_cache["tok"]
     try:
         req = urllib.request.Request(f"{_TOKEN_URL}/v1/agent-token")
         if _TOKEN_KEY:
             req.add_header("Authorization", f"Bearer {_TOKEN_KEY}")
         with urllib.request.urlopen(req, timeout=15) as r:
-            tok = (json.loads(r.read()) or {}).get("token", "")
-        if tok:
-            _token_cache.update(tok=tok, at=now)
-        return tok
+            return str((json.loads(r.read()) or {}).get("token") or "")
     except urllib.error.HTTPError as error:
         error.close()
-        return _token_cache["tok"]
+        return ""
     except Exception:
-        # Fall back to whatever we last held; a stale token produces a clean 401 from Graph, which
-        # is a better failure than pretending we have no credential at all.
-        return _token_cache["tok"]
+        return ""
 
 
 def _caller_tier() -> str:

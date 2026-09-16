@@ -70,6 +70,20 @@ class GraphContractTests(unittest.TestCase):
         self.addCleanup(self.authority.stop)
         self.m = _load_sidecar()
 
+    def test_sidecar_never_reuses_token_after_turn_authority_disappears(self):
+        self.m._TOKEN_URL = "http://127.0.0.1:8088"
+        self.m._TOKEN_KEY = ""
+        missing = _http_error(404, b'{"error":"no agent turn authority seen yet"}')
+        with mock.patch.object(self.m.urllib.request, "urlopen", side_effect=[
+            _Response(b'{"token":"turn-token"}'),
+            missing,
+        ]) as urlopen:
+            self.assertEqual(self.m._token(), "turn-token")
+            self.assertEqual(self.m._token(), "")
+
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertTrue(missing.closed)
+
     def test_get_honors_numeric_retry_after_and_recovers(self):
         with mock.patch.object(self.m, "_token", return_value="token"), \
              mock.patch.object(self.m.urllib.request, "urlopen", side_effect=[

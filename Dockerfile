@@ -130,15 +130,13 @@ ENV ASPNETCORE_URLS=http://+:8088 \
     API_SERVER_PORT=8642 \
     HERMES_COLD_START_WAIT=240
 
-# Sidecar settings that carry the agent's M365 capability. Both are easy to omit because neither is
-# required to *start*, and neither failure is visible in chat:
-#   AGENT_TOKEN_TTL          how long a fetched Graph token is reused before re-polling the gateway.
+# Sidecar settings that carry optional Microsoft-hosted tool behavior. This is easy to omit because
+# it is not required to *start*, and the failure is not visible in chat:
 #   BROWSER_TOOLBOX_VERSION  selects the Microsoft-hosted Chromium contract used by browse_url.
 #                            Absent, web browsing degrades to fetch-only with no error.
-# Stated explicitly rather than left to defaults, because the live deployment states them and the
+# Stated explicitly rather than left to defaults, because the live deployment states it and the
 # point of this image is to be behaviourally identical to it.
-ENV AGENT_TOKEN_TTL=60 \
-    BROWSER_TOOLBOX_VERSION=1
+ENV BROWSER_TOOLBOX_VERSION=1
 
 # start.sh brings up our three processes, then execs the Hermes entrypoint verbatim — the same
 # `/init /opt/hermes/docker/main-wrapper.sh gateway run` that infra/hermes-runtime.bicep already runs
