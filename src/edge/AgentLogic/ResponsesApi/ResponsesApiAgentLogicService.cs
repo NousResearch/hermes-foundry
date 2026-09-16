@@ -318,7 +318,7 @@ public class ResponsesApiAgentLogicService : IAgentLogicService
         var token = await credential.GetTokenAsync(new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" }), CancellationToken.None);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
 
-        var response = await _httpClient.SendAsync(request);
+        using var response = await _httpClient.SendAsync(request);
         var responseContent = await response.Content.ReadAsStringAsync();
 
         if (!response.IsSuccessStatusCode)

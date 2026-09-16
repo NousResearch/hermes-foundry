@@ -118,6 +118,20 @@ class EdgePrivacyContractTests(unittest.TestCase):
         self.assertIn("Entra returned HTTP", helper)
         self.assertIn("using var response =", helper)
 
+    def test_edge_http_responses_and_routine_requests_are_disposed(self):
+        compatibility = (
+            ROOT / "src/edge/AgentLogic/ResponsesApi/ResponsesApiAgentLogicService.cs"
+        ).read_text()
+        discovery = (
+            ROOT / "src/edge/AgentLogic/ResponsesApi/ResponsesApiAgentLogicServiceFactory.cs"
+        ).read_text()
+        program = (ROOT / "src/edge/Program.cs").read_text()
+        routines = (ROOT / "src/edge/Services/RoutineBindingService.cs").read_text()
+        self.assertIn("using var response = await _httpClient.SendAsync(request);", compatibility)
+        self.assertIn("using var response = await HttpClient.SendAsync(request);", discovery)
+        self.assertIn("using var diagnosticResponse = await DiagHttpHolder.Client.SendAsync(", program)
+        self.assertIn("using var request = new HttpRequestMessage(", routines)
+
     def test_activity_and_routine_paths_forward_safe_correlation(self):
         activity = (
             ROOT / "src/edge/AgentLogic/HermesRouter/HermesRouterAgentLogicService.cs"

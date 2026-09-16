@@ -405,7 +405,7 @@ public sealed class RoutineBindingService(
         var client = httpClientFactory.CreateClient();
         client.Timeout = TimeSpan.FromSeconds(60);
         var querySeparator = relativePath.Contains('?') ? '&' : '?';
-        var request = new HttpRequestMessage(
+        using var request = new HttpRequestMessage(
             method,
             $"{_projectEndpoint}/{relativePath}{querySeparator}api-version={Uri.EscapeDataString(ApiVersion)}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);

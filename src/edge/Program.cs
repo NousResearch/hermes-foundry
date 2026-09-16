@@ -297,7 +297,8 @@ app.MapPost("/api/messages", async (HttpRequest request, HttpResponse response, 
             // disposed the instant the lambda returned, cancelling the request in flight, so not one
             // http.in line was ever emitted and the diagnostic looked like "email never arrives".
             // A broken instrument reads exactly like the thing it was built to measure.
-            await DiagHttpHolder.Client.SendAsync(req, cancellationToken);
+            using var diagnosticResponse = await DiagHttpHolder.Client.SendAsync(
+                req, cancellationToken);
         }
     }
     catch { /* diagnostics are best-effort by design */ }

@@ -103,7 +103,7 @@ public sealed class ResponsesApiAgentLogicServiceFactory(
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-        var response = await HttpClient.SendAsync(request);
+        using var response = await HttpClient.SendAsync(request);
         var responseContent = await response.Content.ReadAsStringAsync();
 
         if (!response.IsSuccessStatusCode)
