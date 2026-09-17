@@ -61,7 +61,8 @@ distribution. It intentionally excludes tenant-specific deployment state and int
 - Keep the capability matrix describing the authoritative identity and tool path for each operation
   aligned with the production sidecar and edge.
 - Test permission failures, unprovisioned workloads, throttling, retries, and token expiry.
-- Add opt-in policies for high-impact outbound actions.
+- Keep the tenant-wide `internal`, `owner-only`, and `disabled` hard boundaries for Microsoft 365
+  writes and high-impact outbound actions covered by tests; add granular approval workflows later.
 
 ## 6. Reliability and observability
 

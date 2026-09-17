@@ -27,6 +27,8 @@ Image source, choose one:
 Optional:
   MODEL_PRIORITY               Ordered comma-separated deployment names
   MODEL_ALLOWED_DEPLOYMENTS    Runtime allowlist; unset means all compatible project deployments
+  M365_WRITE_POLICY            internal (default), owner-only, or disabled
+  M365_OUTBOUND_POLICY         internal (default), owner-only, or disabled
   IDLE_TIMEOUT_SECONDS         300-3600; default 300
   OUTPUT_DIR                   Default deployment-output/<AGENT>
 
@@ -76,6 +78,14 @@ BASE="https://${ACCOUNT}.services.ai.azure.com/api/projects/${PROJECT}"
 RESOURCE="https://ai.azure.com"
 OUTPUT_DIR="${OUTPUT_DIR:-deployment-output/${AGENT}}"
 MODEL_PRIORITY="${MODEL_PRIORITY:-${PRIMARY_MODEL},${FALLBACK_MODEL}}"
+M365_WRITE_POLICY="${M365_WRITE_POLICY:-internal}"
+M365_OUTBOUND_POLICY="${M365_OUTBOUND_POLICY:-internal}"
+for policy in "$M365_WRITE_POLICY" "$M365_OUTBOUND_POLICY"; do
+  [[ "$policy" =~ ^(internal|owner-only|disabled)$ ]] || {
+    echo "ERROR: Microsoft 365 action policies must be internal, owner-only, or disabled" >&2
+    exit 2
+  }
+done
 mkdir -p "$OUTPUT_DIR"
 WORK=$(mktemp -d /tmp/hermes-blueprint.XXXXXX)
 cleanup() {
@@ -161,11 +171,12 @@ ROUTINE_BINDING_SIGN_KEY=$(openssl rand -hex 32)
 python3 - "$RESOLVED_IMAGE" "$PRIMARY_MODEL" "$FALLBACK_MODEL" "$MODEL_PRIORITY" \
   "$MODEL_SNAPSHOT" "${MODEL_ALLOWED_DEPLOYMENTS:-}" "$BASE" "$TENANT_ID" "$AGENT" \
   "$IDENTITY_SIGN_KEY" "$ROUTINE_BINDING_SIGN_KEY" "$IDLE_TIMEOUT_SECONDS" \
-  "$BLUEPRINT_ID" "$MAIB_NAME" \
+  "$BLUEPRINT_ID" "$MAIB_NAME" "$M365_WRITE_POLICY" "$M365_OUTBOUND_POLICY" \
   > "$WORK/v1.json" <<'PY'
 import json, sys
 (image, primary, fallback, priority, snapshot, allow, project, tenant, agent,
- identity_key, routine_key, idle, blueprint_id, blueprint_name) = sys.argv[1:]
+ identity_key, routine_key, idle, blueprint_id, blueprint_name, write_policy,
+ outbound_policy) = sys.argv[1:]
 env = {
     "AgentLogic": "HermesRouter",
     "McpDiscoverySource": "Manifest",
@@ -180,6 +191,8 @@ env = {
     "IdentitySignKey": identity_key,
     "RoutineBindingSignKey": routine_key,
     "AgentBlueprintId": blueprint_id,
+    "M365_WRITE_POLICY": write_policy,
+    "M365_OUTBOUND_POLICY": outbound_policy,
 }
 if allow:
     env["MODEL_ALLOWED_DEPLOYMENTS"] = allow

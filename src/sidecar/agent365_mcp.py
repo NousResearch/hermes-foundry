@@ -367,6 +367,34 @@ def _caller_tier() -> str:
         return "outsider"
 
 
+_ACTION_POLICIES = {"internal", "owner-only", "disabled"}
+
+
+def _action_policy_guard(setting: str, action: str) -> str:
+    """Apply a tenant-selected hard boundary before a Microsoft 365 mutation.
+
+    `internal` preserves the existing behavior: owner and colleagues can act, outsiders cannot.
+    `owner-only` and `disabled` are opt-in stronger boundaries. An invalid setting fails closed so a
+    typo cannot silently enable writes. This complements the richer owner-memory/prompt policy; it
+    deliberately does not try to interpret natural-language permissions as an authorization token.
+    """
+    policy = (os.environ.get(setting) or "internal").strip().lower()
+    if policy not in _ACTION_POLICIES:
+        return (f"ERROR: ACTION NOT PERFORMED — administrator setting {setting} is invalid; "
+                "writes are disabled until it is corrected. No request was sent to Graph.")
+    tier = _caller_tier()
+    if policy == "disabled":
+        return (f"ERROR: ACTION NOT PERFORMED — administrator policy disables {action}. "
+                "No request was sent to Graph.")
+    if policy == "owner-only" and tier != "owner":
+        return (f"ERROR: ACTION NOT PERFORMED — administrator policy allows {action} only in a "
+                "verified owner conversation. No request was sent to Graph.")
+    if tier == "outsider":
+        return ("ERROR: ACTION NOT PERFORMED — an outside or unidentified caller cannot change "
+                "this Agent User's Microsoft 365 resources. No request was sent to Graph.")
+    return ""
+
+
 def _routine_capability() -> str:
     """Return the current turn's opaque owner-only routine-management capability.
 
@@ -584,9 +612,10 @@ def _graph(method: str, path: str, body=None, raw_body: bool = False) -> str:
     503/504 get the same treatment: they are transient by definition.
     """
     method = method.upper()
-    if method not in {"GET", "HEAD", "OPTIONS"} and _caller_tier() == "outsider":
-        return ("ERROR: ACTION NOT PERFORMED — an outside or unidentified caller cannot change this "
-                "Agent User's Microsoft 365 resources. No request was sent to Graph.")
+    if method not in {"GET", "HEAD", "OPTIONS"}:
+        denied = _action_policy_guard("M365_WRITE_POLICY", "Microsoft 365 writes")
+        if denied:
+            return denied
     try:
         url = _graph_url(path)
     except ValueError as e:
@@ -712,9 +741,9 @@ def _graph_bytes(method: str, path: str):
 
 def _graph_put_bytes(path: str, blob: bytes, if_match: str = "") -> str:
     """Upload binary content, optionally refusing to overwrite a concurrently changed item."""
-    if _caller_tier() == "outsider":
-        return ("ERROR: ACTION NOT PERFORMED — an outside or unidentified caller cannot change this "
-                "Agent User's Microsoft 365 resources. No request was sent to Graph.")
+    denied = _action_policy_guard("M365_WRITE_POLICY", "Microsoft 365 writes")
+    if denied:
+        return denied
     try:
         url = _graph_url(path)
     except ValueError as e:
@@ -933,6 +962,9 @@ def search_emails(query: str, top: int = 10) -> str:
 @mcp.tool()
 def send_email(to: str, subject: str, body: str, html: bool = False) -> str:
     """Send an email FROM THE AGENT'S OWN mailbox. `to` may be comma-separated."""
+    denied = _action_policy_guard("M365_OUTBOUND_POLICY", "outbound email")
+    if denied:
+        return denied
     recips = _mailboxes(to)
     if not recips:
         return "ERROR: at least one recipient address is required."
@@ -951,6 +983,9 @@ def send_email(to: str, subject: str, body: str, html: bool = False) -> str:
 @mcp.tool()
 def reply_email(message_id: str, body: str, reply_all: bool = False) -> str:
     """Reply to a message in the agent's own mailbox, preserving the thread."""
+    denied = _action_policy_guard("M365_OUTBOUND_POLICY", "outbound email")
+    if denied:
+        return denied
     if not message_id:
         return "ERROR: message_id is required."
     op = "replyAll" if reply_all else "reply"
@@ -1030,6 +1065,11 @@ def create_event(subject: str, start: str, end: str, attendees: str = "",
     online_meeting=True (default) attaches a Teams join link. To book a room, put its resource
     mailbox address in `attendees` — the room accepts or declines itself from its own free/busy.
     """
+    if (attendees or "").strip() or (optional_attendees or "").strip():
+        denied = _action_policy_guard("M365_OUTBOUND_POLICY", "meeting invitations")
+        if denied:
+            return ("EVENT NOT CREATED — nothing was scheduled and nobody was invited. "
+                    f"Do not tell anyone a meeting exists.\n{denied}")
     if not subject:
         return "ERROR: subject is required."
     if not start or not end:
@@ -1168,6 +1208,9 @@ def attach_to_event(event_id: str, path: str = "", item_id: str = "", name: str 
     Microsoft documents this as a separate step: adding the attachment alone does NOT push it to
     people already invited.
     """
+    denied = _action_policy_guard("M365_OUTBOUND_POLICY", "calendar notifications and sharing")
+    if denied:
+        return f"NOTHING WAS ATTACHED — the event and its attendees were not changed.\n{denied}"
     if not event_id:
         return "ERROR: event_id is required."
     if not path and not item_id:
@@ -1235,6 +1278,9 @@ def invite_to_event(event_id: str, emails: str, comment: str = "") -> str:
 
     Each new address is sent a meeting request immediately — this is sending mail.
     """
+    denied = _action_policy_guard("M365_OUTBOUND_POLICY", "meeting invitations")
+    if denied:
+        return f"NOBODY WAS INVITED — no meeting request was sent.\n{denied}"
     if not event_id:
         return "ERROR: event_id is required."
     recips = [a.strip() for a in (emails or "").split(",") if a.strip()]
@@ -1263,6 +1309,9 @@ def update_event(event_id: str, subject: str = "", start: str = "", end: str = "
     `body` is REFUSED on a Teams meeting: Graph keeps the join information inside the event body, so
     overwriting it disables joining.
     """
+    denied = _action_policy_guard("M365_OUTBOUND_POLICY", "calendar update notifications")
+    if denied:
+        return f"EVENT NOT UPDATED — it is unchanged and nobody was notified.\n{denied}"
     if not event_id:
         return "ERROR: event_id is required."
     if bool(start) != bool(end):
@@ -1966,6 +2015,9 @@ def share_file(item_id: str, email: str = "", role: str = "read", message: str =
     shared — so creating a document for someone is only half the job. role is 'read' or 'write'.
     Sharing is deliberately per-recipient: there is no anonymous-link option here, because a link
     that anyone can open is not something an agent should mint on its own."""
+    denied = _action_policy_guard("M365_OUTBOUND_POLICY", "file sharing invitations")
+    if denied:
+        return f"SHARE FAILED — the file was NOT shared. Do not tell anyone it was.\n{denied}"
     if not item_id:
         return "ERROR: item_id is required (get it from list_files or search_files)."
     if not email:
@@ -2792,6 +2844,9 @@ def graph_query(path: str) -> str:
 @mcp.tool()
 def graph_write(method: str, path: str, body: str = "") -> str:
     """Write escape hatch: POST/PATCH/DELETE a Graph path as the agent. Use deliberately."""
+    denied = _action_policy_guard("M365_OUTBOUND_POLICY", "generic Graph writes")
+    if denied:
+        return denied
     m = (method or "").upper()
     if m not in {"POST", "PATCH", "PUT", "DELETE"}:
         return "ERROR: method must be one of POST, PATCH, PUT, DELETE."

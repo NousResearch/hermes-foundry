@@ -219,6 +219,7 @@ each value:
 | Foundry model deployment | `MODEL_DEPLOYMENT_NAME`, `FALLBACK_MODEL_DEPLOYMENT_NAME`, `MODEL_PRIORITY` | **Deployment names**, not catalog model IDs. Automatic selection uses the first currently available name in `MODEL_PRIORITY`. See [Model discovery and Teams selection](#model-discovery-and-teams-selection). |
 | Release script | `MODEL_DEPLOYMENTS_SNAPSHOT` | Compatible project deployments captured automatically by `new-version.sh`; used only when live enumeration is unavailable. |
 | Tenant model policy | `MODEL_ALLOWED_DEPLOYMENTS` | Optional blueprint-version-wide subset of compatible project deployments. Leave unset to expose all compatible chat deployments. |
+| Tenant action policy | `M365_WRITE_POLICY`, `M365_OUTBOUND_POLICY` | Optional hard boundaries: `internal` (default, preserves current behavior), `owner-only`, or `disabled`. The outbound policy covers email/replies, invitations and event notifications, sharing invitations, and generic Graph writes. Invalid values fail closed. |
 | Agent 365/Entra bootstrap | `AgentBlueprintId`, `AgentTenantId` | Outputs produced when the blueprint is registered in the tenant. |
 | Agent User creation | `AgentInstanceId`, `AgentUserObjectId`, `AgentUpn` | The ID, Entra object ID, and address of the Agent User created through Agent 365. See [deployment §12](DEPLOYMENT.md#12-approve-and-instantiate-the-agent-user). |
 | Human owner/admin | `AgentOwnerUpn`, `AgentOwnerOid`, `AgentTenantDomain` | The owner's Entra address/object ID and the organization's tenant domain. The runtime can later resolve the configured owner through the Agent User's manager, but the initial values are still required. |
@@ -483,10 +484,11 @@ Known non-production areas include:
   scale-to-zero, restarts, concurrent sessions, resource pressure, and platform upgrades needs more
   validation.
 - **Security:** generic Graph writes, outbound email, sharing, and calendar actions are powerful
-  capabilities. The current authority checks and short-lived-token handoff are POC controls, not a
-  completed enterprise security posture. Formal threat modeling, approvals for high-impact actions,
-  least-privilege review, DLP/retention integration, audit guarantees, and penetration testing remain
-  work.
+  capabilities. Tenant-wide `internal`, `owner-only`, and `disabled` hard boundaries are available,
+  but natural-language owner delegation remains a prompt/memory policy rather than a cryptographic
+  approval. The current authority checks and short-lived-token handoff are POC controls, not a
+  completed enterprise security posture. Formal threat modeling, granular approvals, least-privilege
+  review, DLP/retention integration, audit guarantees, and penetration testing remain work.
 - **Reliability and operations:** coverage is currently a small unit-test suite plus build-time
   checks. There is no complete CI/release pipeline, tenant-isolated integration matrix, load/chaos
   testing, SLO, rollback automation, or mature metrics/alerting package.

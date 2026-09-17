@@ -57,6 +57,14 @@ MODEL_ALLOWED_DEPLOYMENTS="${MODEL_ALLOWED_DEPLOYMENTS:-}"
 PROJECT_MODEL_BASE_URL="${PROJECT_MODEL_BASE_URL:-${BASE}/openai/v1}"
 ROUTINE_CREDENTIAL_VAULT_URI="${ROUTINE_CREDENTIAL_VAULT_URI:-}"
 ROUTINE_CREDENTIAL_CERTIFICATE_NAME="${ROUTINE_CREDENTIAL_CERTIFICATE_NAME:-}"
+M365_WRITE_POLICY="${M365_WRITE_POLICY:-}"
+M365_OUTBOUND_POLICY="${M365_OUTBOUND_POLICY:-}"
+for policy in "$M365_WRITE_POLICY" "$M365_OUTBOUND_POLICY"; do
+  [ -z "$policy" ] || [[ "$policy" =~ ^(internal|owner-only|disabled)$ ]] || {
+    echo "ERROR: Microsoft 365 action policies must be internal, owner-only, or disabled" >&2
+    exit 2
+  }
+done
 
 # Pin by DIGEST, never by tag. A mutable tag once moved Hermes two releases forward inside what was
 # supposed to be an unrelated deploy; a digest cannot do that.
@@ -180,7 +188,7 @@ echo "==> captured $(awk -F, '{print NF}' <<< "$MODEL_DEPLOYMENTS_SNAPSHOT") cha
 # An unroutable version is the harmless outcome. The dangerous one is that the API accepts a
 # malformed body without complaint, which is exactly why the diff below runs before any traffic
 # moves — an agent serving a version with no protocols would simply stop answering Teams.
-python3 - "$WORK/cur.json" "$IMAGE" "$PRIMARY_MODEL" "$FALLBACK_MODEL" "$PROJECT_MODEL_BASE_URL" "$ROUTINE_CREDENTIAL_VAULT_URI" "$ROUTINE_CREDENTIAL_CERTIFICATE_NAME" "$MODEL_PRIORITY" "$MODEL_DEPLOYMENTS_SNAPSHOT" "$MODEL_ALLOWLIST_MODE" "$MODEL_ALLOWED_DEPLOYMENTS" > "$WORK/body.json" <<'PY'
+python3 - "$WORK/cur.json" "$IMAGE" "$PRIMARY_MODEL" "$FALLBACK_MODEL" "$PROJECT_MODEL_BASE_URL" "$ROUTINE_CREDENTIAL_VAULT_URI" "$ROUTINE_CREDENTIAL_CERTIFICATE_NAME" "$MODEL_PRIORITY" "$MODEL_DEPLOYMENTS_SNAPSHOT" "$MODEL_ALLOWLIST_MODE" "$MODEL_ALLOWED_DEPLOYMENTS" "$M365_WRITE_POLICY" "$M365_OUTBOUND_POLICY" > "$WORK/body.json" <<'PY'
 import json, sys
 cur = json.load(open(sys.argv[1])); d = cur["definition"]
 env = dict(d.get("environment_variables", {}) or {})
@@ -205,6 +213,10 @@ if sys.argv[10] == "set":
         env["MODEL_ALLOWED_DEPLOYMENTS"] = sys.argv[11]
     else:
         env.pop("MODEL_ALLOWED_DEPLOYMENTS", None)
+if sys.argv[12]:
+    env["M365_WRITE_POLICY"] = sys.argv[12]
+if sys.argv[13]:
+    env["M365_OUTBOUND_POLICY"] = sys.argv[13]
 if sys.argv[6] or sys.argv[7]:
     if not (sys.argv[6] and sys.argv[7]):
         raise SystemExit("Both ROUTINE_CREDENTIAL_VAULT_URI and ROUTINE_CREDENTIAL_CERTIFICATE_NAME are required")
@@ -243,7 +255,7 @@ az rest --method GET --resource "$RES" \
 
 verify_graph_inheritance "$WORK/newfull.json" "new-v$NEW"
 
-python3 - "$WORK/cur.json" "$WORK/newfull.json" "$CUR" "$NEW" "$PRIMARY_MODEL" "$FALLBACK_MODEL" "$PROJECT_MODEL_BASE_URL" "$MODEL_PRIORITY" "$MODEL_DEPLOYMENTS_SNAPSHOT" "$MODEL_ALLOWLIST_MODE" "$MODEL_ALLOWED_DEPLOYMENTS" <<'PY'
+python3 - "$WORK/cur.json" "$WORK/newfull.json" "$CUR" "$NEW" "$PRIMARY_MODEL" "$FALLBACK_MODEL" "$PROJECT_MODEL_BASE_URL" "$MODEL_PRIORITY" "$MODEL_DEPLOYMENTS_SNAPSHOT" "$MODEL_ALLOWLIST_MODE" "$MODEL_ALLOWED_DEPLOYMENTS" "$M365_WRITE_POLICY" "$M365_OUTBOUND_POLICY" <<'PY'
 import json, sys
 a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2]))
 da, db = a["definition"], b["definition"]
@@ -302,6 +314,10 @@ if sys.argv[10] == "set":
         problems.append("model allow-list environment variable was not applied")
     if not sys.argv[11] and "MODEL_ALLOWED_DEPLOYMENTS" in eb:
         problems.append("model allow-list environment variable was not removed")
+if sys.argv[12] and eb.get("M365_WRITE_POLICY") != sys.argv[12]:
+    problems.append("Microsoft 365 write policy was not applied")
+if sys.argv[13] and eb.get("M365_OUTBOUND_POLICY") != sys.argv[13]:
+    problems.append("Microsoft 365 outbound policy was not applied")
 if problems:
     sys.exit("ABORT: new version " + sys.argv[4] + " " + "; ".join(problems)
              + ". Do NOT route traffic to it.")

@@ -188,6 +188,50 @@ class GraphOneDriveTests(unittest.TestCase):
             self.assertIn("ACTION NOT PERFORMED", result)
             self.assertIn("No request was sent to Graph", result)
 
+    def test_owner_only_outbound_policy_blocks_colleague_before_graph(self):
+        with mock.patch.dict(os.environ, {
+            "AGENT_CALLER_TIER": "colleague",
+            "M365_OUTBOUND_POLICY": "owner-only",
+        }), mock.patch.object(self.m, "_graph") as graph:
+            result = self.m.send_email("person@example.com", "Subject", "Body")
+
+        graph.assert_not_called()
+        self.assertIn("verified owner conversation", result)
+        self.assertIn("No request was sent to Graph", result)
+
+    def test_default_outbound_policy_preserves_internal_colleague_actions(self):
+        with mock.patch.dict(os.environ, {
+            "AGENT_CALLER_TIER": "colleague",
+            "M365_OUTBOUND_POLICY": "internal",
+        }), mock.patch.object(self.m, "_graph", return_value="OK (202)") as graph:
+            result = self.m.send_email("person@example.com", "Subject", "Body")
+
+        graph.assert_called_once()
+        self.assertEqual("Sent.", result)
+
+    def test_invalid_write_policy_fails_closed_before_token_or_network(self):
+        with mock.patch.dict(os.environ, {
+            "AGENT_CALLER_TIER": "owner",
+            "M365_WRITE_POLICY": "typo",
+        }), mock.patch.object(self.m, "_token") as token, \
+             mock.patch.object(self.m.urllib.request, "urlopen") as urlopen:
+            result = self.m._graph("POST", "me/sendMail", {})
+
+        token.assert_not_called()
+        urlopen.assert_not_called()
+        self.assertIn("M365_WRITE_POLICY is invalid", result)
+        self.assertIn("No request was sent to Graph", result)
+
+    def test_action_policies_flow_to_initial_and_upgrade_versions(self):
+        root = pathlib.Path(__file__).parents[1]
+        initial = (root / "scripts/create-hosted-blueprint.sh").read_text()
+        upgrade = (root / "new-version.sh").read_text()
+        for setting in ("M365_WRITE_POLICY", "M365_OUTBOUND_POLICY"):
+            self.assertIn(f'"{setting}"', initial)
+            self.assertIn(f'"{setting}":', initial)
+            self.assertIn(f'"{setting}"', upgrade)
+            self.assertIn(f'env["{setting}"]', upgrade)
+
     def test_outsider_binary_upload_is_blocked_before_token_or_network(self):
         with mock.patch.object(self.m, "_caller_tier", return_value="outsider"), \
              mock.patch.object(self.m, "_token") as token, \
