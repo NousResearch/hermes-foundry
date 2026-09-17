@@ -57,6 +57,22 @@ class StartupContractTests(unittest.TestCase):
             "Direct NuGet dependencies must resolve identically in every release build",
         )
 
+    def test_durable_state_whitelist_is_seeded_without_overwriting_owner_changes(self):
+        source = (ROOT / "start.sh").read_text()
+        self.assertIn('if [ ! -f "$HERMES_STATE/state-sync.json" ]', source)
+        self.assertIn(
+            'cp /opt/state-sync.defaults.json "$HERMES_STATE/state-sync.json"', source)
+        self.assertIn("COPY config/state-sync.defaults.json /opt/state-sync.defaults.json",
+                      (ROOT / "Dockerfile").read_text())
+
+    def test_releases_identify_state_writer_and_keep_legacy_bridge(self):
+        updater = (ROOT / "new-version.sh").read_text()
+        creator = (ROOT / "scripts" / "create-hosted-blueprint.sh").read_text()
+        for source in (updater, creator):
+            self.assertIn('"HERMES_RELEASE_ID"', source)
+            self.assertIn('"STATE_WRITER_PROTOCOL"', source)
+            self.assertIn('"dual-v1-v2"', source)
+
 
 if __name__ == "__main__":
     unittest.main()

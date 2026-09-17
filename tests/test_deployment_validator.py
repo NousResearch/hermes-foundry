@@ -30,7 +30,7 @@ class DeploymentValidatorTests(unittest.TestCase):
                 "AgentTenantId", "AgentBlueprintId", "AZURE_AI_PROJECT_ENDPOINT",
                 "AZURE_FOUNDRY_BASE_URL", "MODEL_DEPLOYMENT_NAME",
                 "FALLBACK_MODEL_DEPLOYMENT_NAME", "MODEL_PRIORITY",
-                "MODEL_DEPLOYMENTS_SNAPSHOT", "IdentitySignKey", "RoutineBindingSignKey",
+                "MODEL_DEPLOYMENTS_SNAPSHOT", "IdentitySignKey",
             )
         }
         env["AgentLogic"] = agent_logic

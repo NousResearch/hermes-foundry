@@ -188,6 +188,8 @@ env = {
     "FALLBACK_MODEL_DEPLOYMENT_NAME": fallback,
     "MODEL_PRIORITY": priority,
     "MODEL_DEPLOYMENTS_SNAPSHOT": snapshot,
+    "HERMES_RELEASE_ID": image.rsplit("@", 1)[-1],
+    "STATE_WRITER_PROTOCOL": "dual-v1-v2",
     "IdentitySignKey": identity_key,
     "RoutineBindingSignKey": routine_key,
     "AgentBlueprintId": blueprint_id,
@@ -268,6 +270,22 @@ PY
 )
 [ -n "$V1" ] || { echo "ERROR: create response contained no version" >&2; exit 1; }
 wait_active "$V1" "$WORK/v1-active.json"
+python3 - "$WORK/v1-active.json" "$RESOLVED_IMAGE" <<'PY'
+import json, sys
+version = json.load(open(sys.argv[1]))
+definition = version.get("definition") or {}
+environment = definition.get("environment_variables") or {}
+expected_release = sys.argv[2].rsplit("@", 1)[-1]
+problems = []
+if definition.get("image") != sys.argv[2]:
+    problems.append("immutable image was not retained")
+if environment.get("HERMES_RELEASE_ID") != expected_release:
+    problems.append("state writer release identity was not retained")
+if environment.get("STATE_WRITER_PROTOCOL") != "dual-v1-v2":
+    problems.append("state writer compatibility protocol was not retained")
+if problems:
+    raise SystemExit("ERROR: hosted-agent version validation failed: " + "; ".join(problems))
+PY
 RETURNED_BLUEPRINT_ID=$(python3 - "$WORK/v1-active.json" <<'PY'
 import json, sys
 j=json.load(open(sys.argv[1])); print((j.get("blueprint") or {}).get("client_id") or "")

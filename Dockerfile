@@ -102,7 +102,9 @@ RUN /usr/bin/python3 /tmp/apply_fallback_entra_patch.py \
 
 COPY --from=edge-build /out/ /opt/edge/
 COPY src/gateway/app.py /opt/gateway/app.py
+COPY src/gateway/state_sync.py /opt/gateway/state_sync.py
 COPY src/sidecar/agent365_mcp.py /opt/sidecar/agent365_mcp.py
+COPY config/state-sync.defaults.json /opt/state-sync.defaults.json
 COPY start.sh    /opt/start.sh
 RUN chmod +x /opt/start.sh
 
@@ -115,7 +117,7 @@ import asyncio, agent365_mcp as m;\
 tools = asyncio.run(m.mcp.list_tools());\
 names = sorted(t.name for t in tools);\
 assert len(names) >= 20, f'only {len(names)} tools registered: {names}';\
-required = ['remember','recall','create_routine','list_routines','remove_routine','resolve_person','send_email','read_email','list_inbox','create_event','create_docx','edit_docx','create_xlsx','create_pptx','create_pdf','attach_to_event','share_file','web_search','fetch_url','browse_url','screenshot_url','run_code','read_uploaded_file'];\
+required = ['remember','recall','state_sync_config','create_routine','list_routines','remove_routine','resolve_person','send_email','read_email','list_inbox','create_event','create_docx','edit_docx','create_xlsx','create_pptx','create_pdf','attach_to_event','share_file','web_search','fetch_url','browse_url','screenshot_url','run_code','read_uploaded_file'];\
 missing = [r for r in required if r not in names];\
 assert not missing, f'missing tools: {missing}';\
 print('SIDECAR GUARD OK:', len(names), 'tools')"

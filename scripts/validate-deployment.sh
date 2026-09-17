@@ -105,7 +105,7 @@ required = {
     "AgentLogic", "AgentTenantId", "AgentBlueprintId", "AZURE_AI_PROJECT_ENDPOINT",
     "AZURE_FOUNDRY_BASE_URL", "MODEL_DEPLOYMENT_NAME",
     "FALLBACK_MODEL_DEPLOYMENT_NAME", "MODEL_PRIORITY", "MODEL_DEPLOYMENTS_SNAPSHOT",
-    "IdentitySignKey", "RoutineBindingSignKey",
+    "IdentitySignKey",
 }
 missing = sorted(required - set(env))
 if missing:
@@ -114,7 +114,8 @@ if env.get("AgentLogic") != "HermesRouter":
     raise SystemExit("FAIL: serving version is not using the production HermesRouter mode")
 print(
     "PASS: serving version is active, digest-pinned, protocol-complete, and has all required "
-    f"settings ({len(env)} names checked; values not printed)."
+    f"settings ({len(env)} names checked; values not printed; routine signing uses "
+    f"{'a dedicated key' if env.get('RoutineBindingSignKey') else 'the supported IdentitySignKey fallback'})."
 )
 PY
 

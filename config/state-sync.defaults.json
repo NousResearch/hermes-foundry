@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "enabled": true,
+  "include_paths": [
+    "memories",
+    "skills",
+    "SOUL.md",
+    "skill-bundles",
+    "pending/memory",
+    "pending/skills"
+  ],
+  "exclude_paths": [
+    "skills/.curator_backups"
+  ],
+  "max_archive_bytes": 240000000,
+  "post_turn_settle_seconds": 3
+}

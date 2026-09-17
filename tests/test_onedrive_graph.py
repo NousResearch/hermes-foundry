@@ -62,6 +62,58 @@ class GraphOneDriveTests(unittest.TestCase):
         self.assertFalse(hasattr(self.m, "list_files_mcp"))
         self.assertFalse(hasattr(self.m, "_odsp_tool_call"))
 
+    def test_state_sync_config_is_owner_only_before_gateway_call(self):
+        with mock.patch.object(self.m, "_caller_tier", return_value="colleague"), \
+             mock.patch.object(self.m, "_state_sync_config_request") as request:
+            result = self.m.state_sync_config("get")
+
+        request.assert_not_called()
+        self.assertIn("only the verified owner", result)
+
+    def test_state_sync_config_get_returns_gateway_validated_view(self):
+        value = {
+            "include_paths": ["memories", "skills"],
+            "exclude_paths": [],
+            "available_unlisted_paths": ["future-state"],
+        }
+        with mock.patch.object(
+            self.m, "_state_sync_config_request", return_value=(200, value)
+        ) as request:
+            result = self.m.state_sync_config("get")
+
+        request.assert_called_once_with("GET")
+        self.assertEqual(value, json.loads(result))
+
+    def test_state_sync_config_set_requires_complete_configuration(self):
+        with mock.patch.object(self.m, "_state_sync_config_request") as request:
+            result = self.m.state_sync_config("set", include_paths=["memories"])
+
+        request.assert_not_called()
+        self.assertIn("requires the complete configuration", result)
+
+    def test_state_sync_config_set_preserves_explicit_nondefault_values(self):
+        with mock.patch.object(
+            self.m, "_state_sync_config_request", return_value=(200, {"enabled": False}),
+        ) as request:
+            result = self.m.state_sync_config(
+                "set",
+                include_paths=["memories"],
+                exclude_paths=["memories/private"],
+                enabled=False,
+                max_archive_bytes=10_000_000,
+                post_turn_settle_seconds=7,
+            )
+
+        request.assert_called_once_with("POST", {
+            "version": 1,
+            "enabled": False,
+            "include_paths": ["memories"],
+            "exclude_paths": ["memories/private"],
+            "max_archive_bytes": 10_000_000,
+            "post_turn_settle_seconds": 7,
+        })
+        self.assertIn("STATE SYNC CONFIG UPDATED", result)
+
     def test_create_routine_returns_complete_task_to_edge_without_identity_fields(self):
         with mock.patch.object(self.m, "_routine_control", return_value="created") as control:
             result = self.m.create_routine(

@@ -306,6 +306,82 @@ _ROUTINE_CONTROL_URL = os.environ.get(
 ).rstrip("/")
 
 
+def _state_sync_config_request(method: str, body: dict = None) -> tuple[int, dict]:
+    """Read or update the gateway-owned whitelist without exposing a generic file-write path."""
+    if not _TOKEN_URL:
+        return 503, {"error": "state synchronization gateway is unavailable"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        f"{_TOKEN_URL}/v1/state-sync-config", data=data, method=method,
+        headers={
+            "Accept": "application/json",
+            **({"Content-Type": "application/json"} if data is not None else {}),
+            **({"Authorization": f"Bearer {_TOKEN_KEY}"} if _TOKEN_KEY else {}),
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            return response.status, json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as error:
+        status = error.code
+        try:
+            parsed = json.loads(_http_error_body(error) or b"{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = {"error": f"HTTP {status}"}
+        return status, parsed
+    except Exception as exc:  # noqa: BLE001 - stable, content-free tool failure
+        return 503, {"error": type(exc).__name__}
+
+
+@mcp.tool()
+def state_sync_config(
+    action: str = "get",
+    include_paths: list[str] = None,
+    exclude_paths: list[str] = None,
+    enabled: bool = None,
+    max_archive_bytes: int = None,
+    post_turn_settle_seconds: int = None,
+) -> str:
+    """View or replace the durable owner-state whitelist for this Agent User.
+
+    Use `action="get"` to inspect it. Use `action="set"` ONLY when the verified owner explicitly
+    asks to change what Hermes persists; send the complete configuration returned by `get`, changing
+    only the requested values. The server permanently blocks secrets, credentials,
+    deployed code, conversation databases, caches, logs, sockets and locks even if named here.
+    `get` also reports safe available_unlisted_paths so newly introduced Hermes state is visible for
+    an owner decision. This tool cannot grant access to another identity or expose stored contents.
+    """
+    if _caller_tier() != "owner":
+        return ("STATE SYNC CONFIG NOT CHANGED — only the verified owner may view or change the "
+                "durable-state whitelist.")
+    action = (action or "get").strip().lower()
+    if action == "get":
+        status, value = _state_sync_config_request("GET")
+        if status != 200:
+            return f"STATE SYNC CONFIG UNAVAILABLE — HTTP {status}."
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    if action != "set":
+        return "STATE SYNC CONFIG NOT CHANGED — action must be get or set."
+    if any(value is None for value in (
+        include_paths, exclude_paths, enabled, max_archive_bytes, post_turn_settle_seconds,
+    )):
+        return ("STATE SYNC CONFIG NOT CHANGED — set requires the complete configuration. Call "
+                "get first and preserve every value not being changed.")
+    payload = {
+        "version": 1,
+        "enabled": enabled,
+        "include_paths": include_paths,
+        "exclude_paths": exclude_paths,
+        "max_archive_bytes": max_archive_bytes,
+        "post_turn_settle_seconds": post_turn_settle_seconds,
+    }
+    status, value = _state_sync_config_request("POST", payload)
+    if status != 200:
+        return (f"STATE SYNC CONFIG NOT CHANGED — HTTP {status}: "
+                f"{value.get('error', 'request rejected')}.")
+    return "STATE SYNC CONFIG UPDATED.\n" + json.dumps(value, ensure_ascii=False, indent=2)
+
+
 def _token() -> str:
     """The agent's own Graph token.
 

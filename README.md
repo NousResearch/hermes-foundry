@@ -324,6 +324,107 @@ Hermes state defaults to `/files/hermes`, within Foundry's persisted filesystem.
 configuration to the locations expected by Hermes and starts the edge before slow model services so
 the hosted session can satisfy its readiness window.
 
+Foundry filesystem persistence is session-scoped, so the gateway additionally synchronizes a
+deliberately small durable subset of `HERMES_HOME` to the Agent User's own OneDrive App Folder. Each
+Agent User therefore has a separate archive without a tenant-wide bucket, storage credential, email
+address, or platform user ID in the key. Only verified owner turns and cryptographically bound
+owner-authorized Routines restore or update it. Colleague sessions remain isolated: they neither
+receive the owner's native Hermes memory nor teach the owner's durable skill library. The separate
+`recall` tool continues to disclose only owner permissions relevant to a colleague's current request.
+
+The image supplies defaults from `config/state-sync.defaults.json`; the Agent User's persisted state
+stores only owner changes in `/files/hermes/state-sync-overrides.json`. A new image can therefore add
+a safe default path without overwriting an owner's prior choices. During the release-80 compatibility
+window, `/files/hermes/state-sync.json` is also materialized with the effective configuration because
+release 80 does not understand sparse overrides. Its defaults preserve `memories/`, all of `skills/`
+except curator backup copies, `SOUL.md`, skill bundles, and pending memory/skill approvals.
+Administrators can edit the packaged defaults, and the verified owner can inspect or replace the
+effective policy through the constrained `state_sync_config` tool. The tool requires complete lists
+so an ambiguous partial request cannot silently discard an existing path. Its read action also lists
+safe, unselected top-level paths, making newly introduced Hermes state visible for an explicit owner
+decision. Turning synchronization off writes one final checkpoint containing that setting; later
+turns continue checking the remote head but do not upload state until the owner enables it again.
+
+The whitelist cannot override the gateway's hard safety exclusions. Credentials and tokens,
+deployment-generated configuration, runtime code and dependencies, conversation/session databases,
+logs, caches, checkpoints, temporary files, sockets, PID/lock files, and SQLite WAL/SHM files are
+never archived. Symlinks are not followed. Restore validates every tar member and atomically overlays
+regular selected files; it never extracts a path supplied outside `HERMES_HOME`.
+
+### Save and restore lifecycle
+
+Before every verified-owner turn, the gateway compares the OneDrive head with the state last seen by
+that container. It restores the full selected state on the first turn and merges a newer remote head
+before later turns. Unchanged turns require only metadata checks; the archive is not downloaded
+again. This matters when, for example, Teams and email have separate Foundry sessions for the same
+Agent User. If remote validation or migration fails, chat remains available but state writes are
+blocked for that turn so a stale container cannot replace a newer or incompatible archive.
+
+After the response has been delivered, the gateway saves while that turn's short-lived Agent User
+Graph token still exists. A second pass after the configured three-second settle period catches quick
+background memory or skill creation. Longer post-response work is saved on the next verified-owner
+turn in that same session. Non-owner conversations never restore or update this state. A process
+failure after the answer but before the upload can therefore delay or, if the session disappears,
+lose only that last unsaved change; the response path is intentionally not made dependent on
+OneDrive availability.
+
+The App Folder contains these state-control objects:
+
+- `hermes-owner-state-v1.tar.gz` is the mutable release-80 compatibility head.
+- `hermes-state-snapshot-<sha256>.tar.gz` is an immutable, content-addressed snapshot.
+- `hermes-state-current-v2.json` is the small mutable pointer to the current snapshot. It records
+  the state schema, individual component schemas, writer release/protocol, the matching legacy ETag,
+  and up to five previous snapshot references.
+
+A save first updates the compatibility head with an ETag precondition, creates the immutable
+snapshot, and then advances the pointer with another ETag precondition. A pointer never references
+bytes that have not already been written and hash-verified. Snapshot files outside the bounded
+pointer history are currently retained; automatic garbage collection is deliberately deferred until
+safe retention and recovery policy are defined.
+
+### Concurrent sessions
+
+Turns inside one container are serialized. Separate Foundry sessions are not, so simultaneous Teams,
+email, web, or Routine turns can race. The first compatibility-head writer succeeds. A stale writer
+receives an ETag conflict, reads the winner, performs a three-way file merge against the head it
+originally loaded, and retries against the new ETag. Remote-only changes and deletions are applied;
+local-only changes remain. If both sessions changed the same file, the active local version stays at
+the expected path and the remote bytes are retained under
+`pending/*/state-sync-conflicts/<hash>/...` for explicit reconciliation. A third writer winning the
+bounded retry defers this session's save rather than silently overwriting it.
+
+This provides conflict-safe eventual consistency, not a global distributed transaction. Two truly
+simultaneous turns may answer from the same older snapshot before either has saved. Serializing every
+channel through a distributed per-Agent-User lock would give stronger ordering but would also put a
+remote lock and its failure mode on every interaction; it is not part of the current design.
+
+### Updates, migrations, and rollback
+
+The current writer protocol is `dual-v1-v2`. New sessions read and write the v2 snapshot/pointer and
+also maintain the release-80 archive. If an older pinned session writes after a pointer update, its
+new legacy ETag no longer matches the ETag recorded in the pointer. A new session detects that fact,
+uses the legacy write as the newest head, merges it, and advances the pointer again. This bridge must
+remain enabled while release-80 sessions may still exist.
+
+Legacy complete whitelist configuration is migrated lazily, immediately before the first owner turn,
+into packaged defaults plus sparse owner overrides without changing its effective behavior. The v2
+pointer versions the overall state and `memory`, `skills`, `config_overrides`, and
+`pending_approvals` independently. Unknown or newer schemas fail closed for restore and upload;
+support for a breaking format must ship as an explicit, tested migration before that version is
+routed. The safe release sequence is expand first (read old and new, dual-write), wait for pinned old
+sessions to drain, verify the fleet, and only then contract in a separate release. The v2-only
+contraction and snapshot garbage collection are not implemented yet.
+
+Runtime rollback and state rollback are different operations. Routing back to a previous immutable
+hosted-agent version is safe while that version still understands the active writer protocol. It does
+not rewind user state. The pointer retains prior snapshot references for recovery, but automated
+state rollback is intentionally not exposed yet because it must use compare-and-swap and preserve the
+displaced head rather than hand-editing or deleting OneDrive files.
+
+The default compressed-archive ceiling is 240 MB, below Graph's 250 MB direct-upload limit. It is
+configurable downward but cannot be raised above 250 MB through the editable file. This mechanism is
+for curated memory and procedural skills, not large work products or complete container backups.
+
 Owner-approved long-term memory is stored in the Agent User's own OneDrive through `remember` and
 `recall`. Caller-scoped `/model` preferences are stored on the persisted Hermes state volume using a
 one-way hash of the conversation key.

@@ -111,16 +111,20 @@ required = {
     "AgentLogic", "AgentTenantId", "AgentBlueprintId", "AZURE_AI_PROJECT_ENDPOINT",
     "AZURE_FOUNDRY_BASE_URL", "MODEL_DEPLOYMENT_NAME", "FALLBACK_MODEL_DEPLOYMENT_NAME",
     "MODEL_PRIORITY", "MODEL_DEPLOYMENTS_SNAPSHOT", "IdentitySignKey",
-    "RoutineBindingSignKey",
 }
 missing = sorted(required - set(env))
 if missing:
     raise SystemExit("ABORT: target version is missing required settings: " + ", ".join(missing))
+# RoutineBindingService deliberately falls back to IdentitySignKey for installations created before
+# the dedicated routine key was introduced. Requiring both here made valid legacy versions
+# impossible to route even though the runtime accepts and tests this compatibility path.
+routine_key_source = "dedicated" if env.get("RoutineBindingSignKey") else "IdentitySignKey fallback"
 if env.get("AgentLogic") != "HermesRouter":
     raise SystemExit("ABORT: target version is not using the production HermesRouter mode")
 if str(env.get("AgentBlueprintId") or "").lower() != sys.argv[2].lower():
     raise SystemExit("ABORT: target version AgentBlueprintId does not match the hosted agent")
-print("PASS: target version is active, digest-pinned, protocol-complete, and production-configured.")
+print("PASS: target version is active, digest-pinned, protocol-complete, and production-configured "
+      f"(routine signing: {routine_key_source}).")
 PY
 
 az rest --method GET \

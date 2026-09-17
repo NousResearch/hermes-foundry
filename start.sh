@@ -113,6 +113,16 @@ for d in /files "$HOME"; do
   [ -d "$d" ] && log "persisted-path check: $d exists, writable=$([ -w "$d" ] && echo yes || echo NO)"
 done
 
+# The cross-session backup is deliberately whitelist-based. Keep the editable copy in HERMES_HOME
+# so it travels with the state it describes; seed it only once, allowing the owner (through the
+# constrained state_sync_config tool) or an administrator to change it without every cold start
+# reverting the choice. The gateway still enforces a non-overridable denylist for secrets, runtime
+# code, conversation databases, caches, locks and logs.
+if [ ! -f "$HERMES_STATE/state-sync.json" ]; then
+  cp /opt/state-sync.defaults.json "$HERMES_STATE/state-sync.json"
+  log "seeded editable durable-state whitelist at $HERMES_STATE/state-sync.json"
+fi
+
 # _config_version is required: without it Hermes logs "This config predates version 12 and can no
 # longer be auto-migrated" and does not apply the file.
 mkdir -p /opt/data

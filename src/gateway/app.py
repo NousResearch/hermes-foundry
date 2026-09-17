@@ -29,6 +29,7 @@ Standard library only, on purpose. No pip install, no lockfile, nothing to audit
 import hashlib
 import json
 import os
+import pathlib
 import re
 import socket
 import sys
@@ -39,12 +40,22 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# app.py is also loaded directly by contract tests, where Python does not automatically place the
+# source file's directory on sys.path as it does for `python /opt/gateway/app.py`.
+_GATEWAY_DIR = os.path.dirname(os.path.abspath(__file__))
+if _GATEWAY_DIR not in sys.path:
+    sys.path.insert(0, _GATEWAY_DIR)
+from state_sync import StateSyncManager, load_config as load_state_sync_config
+from state_sync import write_config as write_state_sync_config
+from state_sync import unlisted_durable_candidates
+
 HERMES_URL = os.environ["HERMES_URL"].rstrip("/")
 HERMES_KEY = os.environ.get("HERMES_KEY", "")
 GATEWAY_KEY = os.environ.get("GATEWAY_KEY", "")
 PORT = int(os.environ.get("PORT", "8080"))
 SIDECAR_HOST = os.environ.get("SIDECAR_HOST", "127.0.0.1")
 SIDECAR_PORT = int(os.environ.get("SIDECAR_PORT", "8010"))
+HERMES_STATE = os.environ.get("HERMES_STATE", "/files/hermes")
 
 # Shared directory the sidecar spools outbound attachments into. Must match AGENT_OUTBOX in the
 # sidecar; both default to the same path so the two halves cannot drift apart silently.
@@ -99,6 +110,15 @@ _authority_lock = threading.Lock()
 # a correlation ID. Health, telemetry, attachment registration and token reads remain concurrent,
 # which is necessary for the active turn itself to complete.
 _turn_lock = threading.Lock()
+
+
+def _state_sync_log(message):
+    # state_sync emits only operation names, counts, sizes and error classes. Route through the normal
+    # redactor/telemetry path anyway so that one logging policy remains authoritative.
+    log(message)
+
+
+_state_sync = StateSyncManager(HERMES_STATE, logger=_state_sync_log)
 
 
 def _clear_turn_authority():
@@ -408,6 +428,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200 if health["ok"] else 503,
                        json.dumps(health, separators=(",", ":")).encode())
             return
+        if self.path == "/v1/state-sync-config":
+            if not self._authorised():
+                self._send(401, b'{"error":"unauthorized"}')
+                return
+            with _authority_lock:
+                tier = _agent_token.get("tier", "outsider")
+            if tier != "owner":
+                self._send(403, b'{"error":"verified owner turn required"}')
+                return
+            try:
+                value = load_state_sync_config(pathlib.Path(HERMES_STATE))
+                value = dict(value)
+                value["available_unlisted_paths"] = unlisted_durable_candidates(
+                    pathlib.Path(HERMES_STATE), value)
+                self._send(200, json.dumps(value, separators=(",", ":")).encode())
+            except Exception as exc:
+                log(f"[state-sync] config read failed type={type(exc).__name__}")
+                self._send(500, b'{"error":"state synchronization configuration is invalid"}')
+            return
         # The m365 MCP sidecar polls this for the agent's current Graph token. The sidecar sits next
         # to Hermes as a long-lived container, so it cannot take the token from an env var captured
         # at start the way the per-turn sandbox sidecar does.
@@ -438,6 +477,21 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     return self._do_POST()
                 finally:
+                    # Complete the state write while this turn's short-lived Agent User token still
+                    # exists. `_do_POST` has already delivered the HTTP/SSE response, so the small
+                    # synchronization delay does not hold the user's answer. A second bounded pass
+                    # catches quick background skill creation; longer reviews are picked up on the
+                    # owner's next turn.
+                    sync = getattr(self, "_state_sync_context", None)
+                    # BaseHTTPRequestHandler can reuse one handler for multiple requests on a
+                    # keep-alive connection. Remove the turn token from the handler itself before
+                    # doing the bounded upload, so a later colleague turn cannot inherit it.
+                    self._state_sync_context = None
+                    if sync:
+                        try:
+                            _state_sync.finish_turn(sync)
+                        except Exception as exc:  # synchronization must never discard a reply
+                            log(f"[state-sync] finish failed type={type(exc).__name__}")
                     # A Graph token or routine capability is usable only while this turn is
                     # executing. Do not leave standing authority between messages.
                     _clear_turn_authority()
@@ -477,6 +531,26 @@ class Handler(BaseHTTPRequestHandler):
             self._send(204)
             return
 
+        # Owner-editable durable-state whitelist. This is an internal gateway endpoint rather than
+        # a generic local file writer: validation and the hard denylist stay outside model control.
+        if self.path == "/v1/state-sync-config":
+            with _authority_lock:
+                tier = _agent_token.get("tier", "outsider")
+            if tier != "owner":
+                self._send(403, b'{"error":"verified owner turn required"}')
+                return
+            try:
+                value = write_state_sync_config(
+                    pathlib.Path(HERMES_STATE), json.loads(raw or b"{}"))
+                self._send(200, json.dumps(value, separators=(",", ":")).encode())
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                log(f"[state-sync] config rejected type={type(exc).__name__}")
+                self._send(400, b'{"error":"invalid state synchronization configuration"}')
+            except Exception as exc:
+                log(f"[state-sync] config write failed type={type(exc).__name__}")
+                self._send(500, b'{"error":"state synchronization configuration was not changed"}')
+            return
+
         # ---- outbound attachment registration ---------------------------------------------------
         # The sidecar calls this after spooling a file it wants attached to the reply (see
         # _pending_attachments above for why the bytes do not travel through the model).
@@ -508,6 +582,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/chat/completions":
             _discard_stale_attachments()
 
+            # A keep-alive handler may have served an earlier owner turn. Always start with no state
+            # authority; only this request's verified owner headers may opt back in below.
+            self._state_sync_context = None
+
             # Caller authority is per request. Refresh it even if this turn has no Graph token;
             # otherwise a failed mint on a colleague turn could inherit the previous owner's tier.
             # Clear the token too: using a stale credential from a different turn is worse than
@@ -529,6 +607,22 @@ class Handler(BaseHTTPRequestHandler):
                 log("[edge] agent.token.refreshed")
             else:
                 log("[edge] agent.token.cleared | current turn supplied none")
+
+            # Refresh before Hermes sees every verified-owner turn. The first turn hydrates the
+            # complete archive; later turns perform cheap head checks and merge another session's
+            # changes when needed. OneDrive itself is scoped to this Agent User, so fixed object
+            # names expose no owner, tenant or agent ID. Never load this native memory into a
+            # colleague session; colleagues use only relevant, selectively recalled owner
+            # permissions.
+            caller_tier = self.headers.get("X-Caller-Tier") or "outsider"
+            if tok and caller_tier == "owner":
+                self._state_sync_context = tok
+                try:
+                    _state_sync.prepare_turn(tok)
+                except Exception as exc:
+                    # The local Foundry session is still usable. Fail open for chat, fail closed for
+                    # state replacement, and expose only the exception class in telemetry.
+                    log(f"[state-sync] prepare failed type={type(exc).__name__}")
 
             # Hermes' stream is the source of structured tool progress and 30-second keepalives.
             # If an older or alternate Hermes ignores the flag, the response-content-type branch

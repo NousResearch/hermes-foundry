@@ -208,6 +208,10 @@ env["FALLBACK_MODEL_DEPLOYMENT_NAME"] = sys.argv[4]
 env["AZURE_FOUNDRY_BASE_URL"] = sys.argv[5]
 env["MODEL_PRIORITY"] = sys.argv[8]
 env["MODEL_DEPLOYMENTS_SNAPSHOT"] = sys.argv[9]
+# State writers identify their immutable runtime release without exposing tenant or agent data.
+# dual-v1-v2 keeps sessions pinned to release 80 interoperable during the migration window.
+env["HERMES_RELEASE_ID"] = sys.argv[2].rsplit("@", 1)[-1]
+env["STATE_WRITER_PROTOCOL"] = "dual-v1-v2"
 if sys.argv[10] == "set":
     if sys.argv[11]:
         env["MODEL_ALLOWED_DEPLOYMENTS"] = sys.argv[11]
@@ -309,6 +313,11 @@ if eb.get("MODEL_PRIORITY") != sys.argv[8]:
     problems.append("model priority environment variable was not applied")
 if eb.get("MODEL_DEPLOYMENTS_SNAPSHOT") != sys.argv[9]:
     problems.append("model deployment snapshot environment variable was not applied")
+expected_release = str(db.get("image") or "").rsplit("@", 1)[-1]
+if not expected_release or eb.get("HERMES_RELEASE_ID") != expected_release:
+    problems.append("state writer release identity was not applied")
+if eb.get("STATE_WRITER_PROTOCOL") != "dual-v1-v2":
+    problems.append("state writer compatibility protocol was not applied")
 if sys.argv[10] == "set":
     if sys.argv[11] and eb.get("MODEL_ALLOWED_DEPLOYMENTS") != sys.argv[11]:
         problems.append("model allow-list environment variable was not applied")

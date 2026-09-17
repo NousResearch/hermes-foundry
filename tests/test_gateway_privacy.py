@@ -99,6 +99,31 @@ class GatewayPrivacyTests(unittest.TestCase):
             self.gateway._agent_token,
         )
 
+    def test_state_sync_finishes_before_turn_authority_is_erased(self):
+        events = []
+
+        class Probe(self.gateway.Handler):
+            def _do_POST(probe_self):
+                self.gateway._agent_token.update(token="short-lived", tier="owner")
+                probe_self._state_sync_context = "short-lived"
+
+        handler = object.__new__(Probe)
+        handler.path = "/v1/chat/completions"
+        with mock.patch.object(
+            self.gateway._state_sync, "finish_turn",
+            side_effect=lambda token: events.append(("sync", token)),
+        ), mock.patch.object(
+            self.gateway, "_clear_turn_authority",
+            side_effect=lambda: events.append(("clear", None)),
+        ):
+            handler.do_POST()
+
+        self.assertEqual([
+            ("sync", "short-lived"),
+            ("clear", None),
+        ], events)
+        self.assertIsNone(handler._state_sync_context)
+
     def test_log_lines_receive_current_turn_correlation_without_identity(self):
         self.gateway._agent_token["correlation"] = "safe-correlation"
         output = io.StringIO()
