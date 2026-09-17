@@ -307,8 +307,29 @@ if problems:
              + ". Do NOT route traffic to it.")
 PY
 
+# Leave a durable release record without copying tenant coordinates, model deployment names,
+# identities, or environment values out of the guarded temporary directory. deployment-output is
+# ignored by Git and is intentionally local to the deployment operator.
+SOURCE_COMMIT=$(git rev-parse --verify HEAD)
+if [ -z "$(git status --porcelain --untracked-files=normal)" ]; then
+  SOURCE_STATE=clean
+else
+  SOURCE_STATE=dirty
+  echo "WARNING: source worktree is dirty; the release record will mark this version as dirty."
+fi
+RELEASE_RECORD="deployment-output/release-records/${SOURCE_COMMIT:0:12}-v${NEW}.md"
+python3 scripts/write-release-record.py \
+  --output "$RELEASE_RECORD" \
+  --dockerfile Dockerfile \
+  --source-commit "$SOURCE_COMMIT" \
+  --source-state "$SOURCE_STATE" \
+  --image-digest "$DIGEST" \
+  --previous-version "$CUR" \
+  --new-version "$NEW"
+
 cat <<EOF
 ==> version $NEW created and verified. NOTHING IS ROUTED TO IT YET.
+Sanitized local release record: $RELEASE_RECORD
 
 To serve it:
   ./scripts/route-agent-version.sh \\

@@ -284,7 +284,9 @@ The script:
 4. Enumerates the project's chat-capable deployments and records a safe fallback snapshot.
 5. Creates a new version with the selected image and model policy.
 6. Compares the old and new definitions without printing environment values.
-7. Prints an explicit routing command but does not execute it.
+7. Writes a mode-0600, tenant-neutral release record below the ignored
+   `deployment-output/release-records/` directory.
+8. Prints an explicit routing command but does not execute it.
 
 Review the comparison and test the new version before routing production traffic.
 

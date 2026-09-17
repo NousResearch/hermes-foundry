@@ -13,7 +13,8 @@ distribution. It intentionally excludes tenant-specific deployment state and int
   audit required by CI.
 - Keep upstream container images and direct application dependencies pinned; update pins only with
   a tested release rather than allowing mutable tags or wildcard prereleases.
-- Produce immutable image digests and release notes for each version.
+- Keep immutable image resolution and the sanitized, tenant-neutral local release record generated
+  for every hosted-agent version; never copy environment values into release notes.
 - Keep the documented compatibility and guarded rollback policy for the pinned Hermes base image
   aligned with the release scripts.
 
