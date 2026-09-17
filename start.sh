@@ -274,14 +274,15 @@ AUXILIARY_PIDS+=("$!")
 AUXILIARY_PIDS+=("$!")
 
 # The platform readiness probe intentionally targets the fast edge, not slow-starting Hermes. Once
-# all local services have had time to boot, record dependency-state transitions from the gateway's
-# deeper health aggregate. This emits component booleans only: never endpoints, tokens or content.
+# all local services have had time to boot, record dependency-state transitions from the edge's
+# deeper health aggregate. This verifies edge -> gateway -> Hermes/sidecar and emits component
+# booleans only: never endpoints, tokens or content.
 ( last=""
   while true; do
     state=$(python3 - <<'PY' 2>/dev/null || true
 import json, urllib.error, urllib.request
 try:
-    with urllib.request.urlopen("http://127.0.0.1:8080/healthz", timeout=1) as response:
+    with urllib.request.urlopen("http://127.0.0.1:8088/healthz", timeout=3) as response:
         payload = json.load(response)
 except urllib.error.HTTPError as error:
     try:

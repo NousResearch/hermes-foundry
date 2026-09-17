@@ -20,6 +20,11 @@ class StartupContractTests(unittest.TestCase):
         source = (ROOT / "start.sh").read_text()
         self.assertNotIn("tee -a /tmp/hermes.log", source)
 
+    def test_dependency_monitor_uses_edge_deep_health(self):
+        source = (ROOT / "start.sh").read_text()
+        self.assertIn('urlopen("http://127.0.0.1:8088/healthz"', source)
+        self.assertNotIn('urlopen("http://127.0.0.1:8080/healthz"', source)
+
 
 if __name__ == "__main__":
     unittest.main()

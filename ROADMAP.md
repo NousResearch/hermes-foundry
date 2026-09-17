@@ -30,8 +30,10 @@ distribution. It intentionally excludes tenant-specific deployment state and int
   tests for mail, calendar, and OneDrive.
 - Productionize the included project-role reconciler and validate installation/removal in a second
   tenant.
-- Add immediate binding revocation, execution deduplication, signing-key rotation, and downstream
-  business-completion telemetry.
+- Add immediate binding revocation, signing-key rotation, and downstream business-completion
+  telemetry. Add execution deduplication when the public Routine contract exposes a stable run or
+  dispatch identifier; do not key it on the documented per-request Foundry call ID because delivery
+  retries can be separate requests.
 - Track the Foundry Routines preview contract and migrate when Microsoft publishes a stronger native
   Agent 365 instance-binding surface.
 
@@ -55,7 +57,8 @@ distribution. It intentionally excludes tenant-specific deployment state and int
 
 ## 6. Reliability and observability
 
-- Add deterministic startup health checks for edge, gateway, Hermes, and sidecar.
+- Keep deterministic shallow readiness and sanitized deep health checks for edge, gateway, Hermes,
+  and sidecar covered by release tests.
 - Measure cold-start and warm-turn latency with the complete image.
 - Add structured correlation across all four processes without logging tokens or message bodies.
 - Verify persisted state across idle teardown, restart, image upgrade, and rollback.

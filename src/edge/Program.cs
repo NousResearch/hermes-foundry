@@ -99,6 +99,9 @@ builder.Services.AddInMemoryTokenCaches();
 builder.Services.AddAgentIdentities();
 builder.Services.AddSingleton<AgentUserAuthorizationService>();
 builder.Services.AddSingleton<OneDriveEmailDeduplicationService>();
+// Sanitized deep health for operators and release smoke tests. Foundry's /readiness remains a
+// shallow edge-only probe so a slow Hermes cold start cannot fail platform admission.
+builder.Services.AddSingleton<RuntimeHealthService>();
 // Project-scoped model inventory and per-caller Teams model selection. The service only enumerates
 // existing Foundry deployments; it cannot deploy a model or expand anybody's Azure permissions.
 builder.Services.AddSingleton<ModelPolicyService>();
@@ -312,6 +315,15 @@ app.MapGet("/", () => "Hello World from HelloWorldA365Agent!");
 app.MapGet("/liveness", () => "Hello World from HelloWorldA365Agent!");
 
 app.MapGet("/readiness", () => "Hello World from HelloWorldA365Agent!");
+
+app.MapGet("/healthz", async (
+    RuntimeHealthService health,
+    CancellationToken cancellationToken) =>
+{
+    var status = await health.CheckAsync(cancellationToken);
+    return Results.Json(status, statusCode: status.Ok ? StatusCodes.Status200OK :
+        StatusCodes.Status503ServiceUnavailable);
+});
 
 
 if (!app.Environment.IsDevelopment())
