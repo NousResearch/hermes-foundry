@@ -51,7 +51,8 @@ distribution. It intentionally excludes tenant-specific deployment state and int
 - Maintain Graph-backed mail, calendar, OneDrive, sharing, and large-file paths.
 - Evaluate first-party Microsoft 365 MCP tools separately where they provide platform-specific
   behavior; do not make the non-production `ResponsesApi` path an implicit production fallback.
-- Add a capability matrix describing which tool path is authoritative for each operation.
+- Keep the capability matrix describing the authoritative identity and tool path for each operation
+  aligned with the production sidecar and edge.
 - Test permission failures, unprovisioned workloads, throttling, retries, and token expiry.
 - Add opt-in policies for high-impact outbound actions.
 

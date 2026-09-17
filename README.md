@@ -300,6 +300,35 @@ creation, in-place Word editing, PDF generation, web search/fetch, durable owner
 Routine creation/list/removal. Teams uploads are downloaded using the recipient Agent User's access,
 and long tool runs update one progress activity before posting the final answer.
 
+### Authoritative capability paths
+
+There is no automatic fallback between Graph, first-party MCP, and Foundry tools. Each production
+operation has one authoritative path so a failure cannot be hidden by silently changing identity or
+permission semantics.
+
+| Capability | Production path | Acting identity and boundary |
+| --- | --- | --- |
+| Mail read, search, send, and reply | Microsoft Graph through the sidecar | The instance's Agent User; Graph delegated scopes inherited and consented through the blueprint |
+| Calendar read, create, update, invite, and attachments | Microsoft Graph through the sidecar | The instance's Agent User |
+| Directory person resolution | Microsoft Graph tenant-directory search | The instance's Agent User; ambiguous matches are returned rather than guessed |
+| OneDrive list, search, read, create, share, and folders | Microsoft Graph through the sidecar | The instance's Agent User and its own drive |
+| Owner memory and email-delivery deduplication | Microsoft Graph OneDrive app-folder data | Durable per Agent User; no container-local authority or message content is stored in markers |
+| Word, Excel, PowerPoint, and PDF artifacts | Local document libraries, then Microsoft Graph upload | Document bytes are produced in the isolated hosted session; the Agent User owns the uploaded item |
+| Existing Word-document edits | Graph download, local OOXML edit, conditional Graph upload | The Agent User; ETag guards prevent overwriting a concurrently changed document |
+| Teams file attachments | Microsoft Agents SDK downloader, then Agent User Graph fallback | Restricted to the current turn's temporary attachment directory |
+| Static URL retrieval | Sidecar HTTPS fetcher | No Microsoft 365 token; public HTTPS targets only, with redirect and private-network checks |
+| Live web search | Foundry Responses API `web_search` | Hosted Agent/Foundry project identity; search transactions are separately metered |
+| Browser automation and screenshots | Foundry Browser Automation Toolbox plus remote Playwright/CDP | Foundry project/toolbox identity; Chromium runs outside the Hermes container |
+| Python execution | Foundry Code Interpreter Toolbox | Foundry project/toolbox identity; the remote sandbox receives no Graph token or tenant network access |
+| Recurring work | Foundry Routines API plus signed instance binding | Owner authorizes creation; execution obtains a fresh Agent User token through Entra Agent OBO |
+| Model inference and model inventory | Foundry project model endpoints | Hosted Agent identity and project RBAC; the administrator's deployments remain authoritative |
+| First-party Microsoft 365 MCP servers | Non-production `ResponsesApi` diagnostic mode only | Never an implicit fallback for the production Hermes path |
+
+This separation also defines portability. The Graph and local-document rows can move with Hermes
+after replacing the Agent User token bootstrap. Foundry model, search, browser, code, and Routine
+rows require either continued remote access to those Azure services or explicit replacement
+adapters on another host.
+
 ## Model discovery and Teams selection
 
 The Azure administrator remains the source of truth for model access. Hermes calls the documented
