@@ -25,13 +25,21 @@
 # v2026.8.3 — the build that ran through 2026-08-13/14 when the tools last worked end to end.
 ARG HERMES_IMAGE=docker.io/nousresearch/hermes-agent@sha256:16788311e2fa3035456bdc1bafb8ec2b1777db64ebf020af9bb7eb73c3712c9e
 
+# Keep the Microsoft build and runtime layers reproducible too. These are manifest-list digests,
+# not architecture-specific child digests, so the same Dockerfile still resolves correctly on
+# ARM64 developer machines and AMD64 Azure builders.
+ARG DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:9.0@sha256:20387c6674c30e46def0cc8cb557bd2a69b35afdf18c19c3694638d0a90897e4
+ARG DOTNET_ASPNET_IMAGE=mcr.microsoft.com/dotnet/aspnet:9.0@sha256:779b0b298964fe93e6c6388c8bb823393a7c301b79cd5b3d80632bc886b2ffd4
+
 # Build the edge inside the container build so a new tenant can use Azure Container Registry's
 # cloud builder without installing .NET locally. global.json remains authoritative for the SDK
 # feature band and fails the image build if the pinned project can no longer compile.
-FROM mcr.microsoft.com/dotnet/sdk:9.0 AS edge-build
+FROM ${DOTNET_SDK_IMAGE} AS edge-build
 WORKDIR /src
 COPY src/edge/ ./
 RUN dotnet publish HelloWorldA365Agent.csproj -c Release -o /out
+
+FROM ${DOTNET_ASPNET_IMAGE} AS aspnet-runtime
 
 FROM ${HERMES_IMAGE} AS runtime
 
@@ -50,7 +58,7 @@ RUN set -eux; \
 # Take the runtime from Microsoft's own image rather than installing it with dotnet-install.sh.
 # The script-installed runtime aborted at startup (SIGABRT, rc=134) with no usable message; the
 # working thin edge uses this exact base, so copy from the source of truth instead of reproducing it.
-COPY --from=mcr.microsoft.com/dotnet/aspnet:9.0 /usr/share/dotnet /usr/share/dotnet
+COPY --from=aspnet-runtime /usr/share/dotnet /usr/share/dotnet
 
 # Sidecar deps in a DEDICATED VENV — do not install into Hermes' environment.
 #

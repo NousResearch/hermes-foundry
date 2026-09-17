@@ -39,10 +39,12 @@
 		<PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />
 		<PackageReference Include="System.Text.Json" Version="10.0.7" />
 		<PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
-		<PackageReference Include="Microsoft.Agents.Authentication.Msal" Version="1.6.109-*" />
-		<PackageReference Include="Microsoft.Agents.Hosting.AspNetCore" Version="1.6.109-*" />
-		<PackageReference Include="Microsoft.Agents.Storage" Version="1.6.109-*" />
-		<PackageReference Include="Microsoft.Agents.Storage.Transcript" Version="1.6.109-*" />
+		<!-- Keep the exact prerelease that the working stack was built and tested against. A wildcard
+		     here makes the same source resolve a different SDK as new prereleases are published. -->
+		<PackageReference Include="Microsoft.Agents.Authentication.Msal" Version="1.6.109-beta" />
+		<PackageReference Include="Microsoft.Agents.Hosting.AspNetCore" Version="1.6.109-beta" />
+		<PackageReference Include="Microsoft.Agents.Storage" Version="1.6.109-beta" />
+		<PackageReference Include="Microsoft.Agents.Storage.Transcript" Version="1.6.109-beta" />
 		<PackageReference Include="Microsoft.ApplicationInsights.AspNetCore" Version="2.23.0" />
 		<!-- Native Entra Agent OBO / Agent User FIC support. Routines identify the child Agent
 		     Identity and its paired Agent User; Microsoft.Identity.Web owns all token exchanges. -->

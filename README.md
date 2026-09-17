@@ -180,6 +180,29 @@ The ACR cloud build compiles the edge, copies the gateway and sidecar, downloads
 base image, and stores the combined image in the target registry. It does not require local Docker
 or .NET and does not deploy or route the image yet.
 
+## Compatibility baseline
+
+This is the reproducible build and API baseline for the current POC. A released container digest,
+not a mutable image tag or whichever dependency is newest, is the deployable artifact.
+
+| Surface | Current baseline |
+| --- | --- |
+| .NET edge | `net9.0`; SDK `9.0.305` selected by `src/edge/global.json`; SDK and ASP.NET container manifest lists pinned by digest |
+| Agent SDK | Direct NuGet versions are exact, including `Microsoft.Agents.*` `1.6.109-beta`; wildcard prereleases are rejected by tests |
+| Python | CI uses Python 3.12; the production sidecar uses a dedicated distro-Python venv with exact application-library versions in the Dockerfile |
+| Azure CLI | 2.80 or later |
+| Azure Developer CLI | 1.27.1 is the oldest deployment version exercised by this POC; `setup.sh` installs the current stable release when absent |
+| Foundry project APIs | Hosted agents, versions, deployments, and routines use `api-version=v1`; routines also require `Routines=V1Preview` |
+| Blueprint/publication APIs | Managed identity blueprint and private Microsoft 365 publication use `2025-11-15-preview` |
+| Container/API protocols | Activity endpoint `2025-05-15-preview`; non-production Responses compatibility client `2025-03-01-preview` |
+| Microsoft Graph | `v1.0` for production mail, calendar, directory, and OneDrive operations |
+
+The preview APIs above are compatibility constraints, not promises of future support. Revalidate
+them before each release and whenever Microsoft changes the hosted-agent or Agent 365 contracts.
+The Python interpreter is installed from the base distribution's package repository during the
+image build, so a source rebuild is not yet bit-for-bit hermetic. The final ACR image digest is the
+authoritative record of the resulting runtime.
+
 ## Where the runtime settings come from
 
 You normally do **not** set these one by one during an update. The first-installation/bootstrap step
