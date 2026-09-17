@@ -291,6 +291,30 @@ Review the comparison and test the new version before routing production traffic
 For first-installation details and the manual routing/rollback process, see
 [DEPLOYMENT.md §11](DEPLOYMENT.md#11-create-a-hermes-hosted-agent-version).
 
+### Hermes base compatibility and rollback
+
+Changing `HERMES_IMAGE` is a runtime upgrade, even when none of this repository's source changes.
+Use a new image tag and hosted-agent version for every base-image digest; never rebuild an existing
+release tag and assume it is equivalent.
+
+Before routing a version built from a new Hermes digest:
+
+1. Run the Python, .NET, shell, and public-tree release checks from a clean checkout.
+2. Complete the ACR build. Its Dockerfile guards must compile the compatibility overlays, register
+   the required sidecar tools, and execute the copied .NET runtime.
+3. Run `new-version.sh`. It resolves the registry tag to a digest, preserves the serving
+   definition, and refuses configuration loss before any traffic changes.
+4. Test the new version in an isolated session for chat, one Graph read, one harmless Graph write,
+   file creation/readback, and a Routine. Do not infer success from the model's prose.
+5. Route with `scripts/route-agent-version.sh`, supplying the version currently serving through
+   `--expect-current`. The script validates the target and reads the route back after the PATCH.
+
+Keep the previous hosted-agent version and its image digest until the validation window closes. To
+roll back, run the same routing command with the previous version as `--target-version` and the bad
+release as `--expect-current`; do not rebuild either image and do not blindly replay a failed PATCH.
+Start a new Microsoft 365 session after routing because existing sessions can remain pinned to the
+version on which they started.
+
 ## Persistence
 
 Hermes state defaults to `/files/hermes`, within Foundry's persisted filesystem. `start.sh` writes

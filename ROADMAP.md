@@ -5,7 +5,8 @@ distribution. It intentionally excludes tenant-specific deployment state and int
 
 ## 1. Reproducible release baseline
 
-- Verify a clean clone can build without files from another repository.
+- Keep the clean-clone Python release suite, .NET build, shell validation, and public-tree audit
+  green; add a full container-build gate to exercise Docker/runtime guards in CI.
 - Keep the documented .NET, Python, Azure CLI/Developer CLI, and Foundry API compatibility baseline
   aligned with release tests.
 - Keep the automated private-artifact, secret, email/domain, local-path, and unreviewed-identifier
@@ -13,7 +14,8 @@ distribution. It intentionally excludes tenant-specific deployment state and int
 - Keep upstream container images and direct application dependencies pinned; update pins only with
   a tested release rather than allowing mutable tags or wildcard prereleases.
 - Produce immutable image digests and release notes for each version.
-- Define compatibility and rollback policy for the pinned Hermes base image.
+- Keep the documented compatibility and guarded rollback policy for the pinned Hermes base image
+  aligned with the release scripts.
 
 ## 2. Tenant installer
 
