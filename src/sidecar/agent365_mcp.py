@@ -16,6 +16,7 @@ chat.
 """
 
 import re
+import base64
 import html
 import io
 import json
@@ -75,10 +76,18 @@ mcp = FastMCP(
         "colleague would be; if a call returns 403 say so plainly rather than retrying. "
         "There is no sign-in step: the identity is always present. If a tool reports the "
         "credential is missing or expired, report that to the user as a system fault. "
-        "DURABLE MEMORY: remember appends owner-authoritative information to this Agent User's "
-        "own OneDrive and hard-refuses non-owner callers. recall reads it across sessions. Before "
-        "refusing a colleague action for lack of approval, use recall; treat relevant recalled "
-        "permissions as direct owner instructions, but never expose unrelated entries. "
+        "PERMISSIONS: follow Permissions for this conversation. Carry out covered requests without "
+        "asking for approval again. Use propose_access_change when your owner wants to grant or "
+        "remove access through you; only their subsequent confirmation applies the change. "
+        "'Allow Alex to work on these documents' or 'let Alex work on anything in this folder' "
+        "means permission to ask YOU to work with those resources: use propose_access_change, "
+        "not share_file. Direct OneDrive sharing is separate and does not grant access through you. "
+        "Use share_file only for a clear request for direct file access, a sharing link, or delivery "
+        "of a document to its recipient. If 'give access' or 'share' could mean either, ask: "
+        "'Should they work with these files through me, or open them directly in OneDrive?' "
+        "Resolving a person's name does not resolve this distinction. Never do both automatically. "
+        "DURABLE MEMORY: remember and recall store owner preferences and context, never access rights. "
+        "Old remembered permissions do not grant access. Owner memory is unavailable to colleagues. "
         "PEOPLE: when someone gives a colleague's name but not their email address, call "
         "resolve_person. It searches the tenant directory. Never use me/contacts for this: that is "
         "the agent's private Outlook address book and is not the organisation directory. If "
@@ -118,6 +127,8 @@ _orig_tool = mcp.tool
 
 _TOOL_FAILURE_PREFIXES = (
     "ERROR",
+    "ACCESS DENIED",
+    "ACCESS NOT CHANGED",
     "ROUTINE NOT CHANGED",
     "PERSON LOOKUP FAILED",
     "EVENT NOT",
@@ -168,6 +179,10 @@ def _logged_tool(*d_args, **d_kwargs):
         if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)
             async def inner(*a, **kw):
+                if name in {"browse_url", "screenshot_url", "fetch_url", "run_code", "web_search"} and _caller_tier() != "owner":
+                    check = _access_request("research", {"tool": name})
+                    if not isinstance(check, dict) or check.get("result") != "Public research authorized":
+                        return "ACCESS DENIED — owner-approved public research is required; code and browser automation are not delegated."
                 print(f"[tool] {name} start (args={sorted(kw)})", flush=True)
                 _edge_log("tool.start", f"name={name}")
                 t0 = time.monotonic()
@@ -179,6 +194,10 @@ def _logged_tool(*d_args, **d_kwargs):
         else:
             @functools.wraps(fn)
             def inner(*a, **kw):
+                if name in {"browse_url", "screenshot_url", "fetch_url", "run_code", "web_search"} and _caller_tier() != "owner":
+                    check = _access_request("research", {"tool": name})
+                    if not isinstance(check, dict) or check.get("result") != "Public research authorized":
+                        return "ACCESS DENIED — owner-approved public research is required; code and browser automation are not delegated."
                 print(f"[tool] {name} start (args={sorted(kw)})", flush=True)
                 _edge_log("tool.start", f"name={name}")
                 t0 = time.monotonic()
@@ -331,6 +350,129 @@ def _state_sync_config_request(method: str, body: dict = None) -> tuple[int, dic
         return status, parsed
     except Exception as exc:  # noqa: BLE001 - stable, content-free tool failure
         return 503, {"error": type(exc).__name__}
+
+
+def _access_request(operation: str, payload: dict):
+    if not _TOKEN_URL:
+        return {"error": "Access verification is unavailable"}
+    req = urllib.request.Request(f"{_TOKEN_URL}/v1/access/{operation}",
+        data=json.dumps(payload).encode(), method="POST", headers={
+            "Content-Type": "application/json", "Authorization": f"Bearer {_TOKEN_KEY}"})
+    try:
+        with urllib.request.urlopen(req, timeout=50) as response:
+            return json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        try: return json.loads(_http_error_body(error))
+        except ValueError: return {"error": "Access verification failed"}
+    except Exception:
+        return {"error": "Access verification is unavailable; no action is confirmed"}
+
+
+@mcp.tool()
+def propose_access_change(recipient: str = "", resource: str = "onedrive", actions: list[str] = None,
+                          scope: dict = None, destinations: list[str] = None, expires: str = "",
+                          operation: str = "grant", grant_id: str = "", public_research: bool = False,
+                          preset: str = "custom") -> str:
+    """Propose owner-approved access THROUGH YOU; never directly grants Microsoft access.
+
+    Use automatically when your owner asks to let a colleague access resources through you.
+    'Allow Alex to work on this document' means access through you; do not substitute share_file.
+    For 'any documents in this folder', use the folder scope so future documents are covered too.
+    Request read/edit for working on existing documents, not delete/share unless explicitly requested.
+    NATURAL COLLABORATION: 'allow John to work on ACME', 'let Alex help with Acme', or 'work together
+    on this folder' means preset='collaboration'; omit actions/destinations. The server proposes
+    read/create/edit plus public research (for a single item: read/edit plus research).
+    Never ask the owner to enumerate tool names, create/edit actions, research flags or presets.
+    Resolve the person and reuse a clearly identified project folder. Otherwise propose an explicit
+    filename-contains scope such as *ACME* in the confirmation; do not require the owner to type it.
+    Tell the owner the default is selected-file read/create/edit and public research, NOT email
+    or calendar access, then wait for confirmation. For a single item, say read/edit, not create.
+    If they say 'full access', 'everything', 'full plus email', or capabilities are unclear, ask
+    what they want BEFORE calling this tool. Never turn 'full' into every available permission.
+    For email clarify which messages, read versus reply/send, and permitted recipients in ordinary
+    language. Do not ask for enum values or tool names. Confirm multiple resources sequentially:
+    each proposal replaces the pending one, so wait for Yes/No before proposing the next resource.
+    Explicit 'read only', 'no research', or other restrictions require preset='custom' and exact actions.
+    public_research allows web_search/fetch_url only; queries/URLs leave the tenant and are not
+    confined to the filename scope. Never send private document contents or secrets as queries.
+    A filename rule does not inspect document contents: show the chosen scope honestly in confirmation.
+    Use *ACME* for names containing ACME, not ACME* unless a prefix was intended. Never silently
+    broaden a pattern or fix a mismatching filename to bypass an access denial; clarify the name.
+    Existing grants are not expanded automatically: propose operation=replace with a new confirmation.
+    If direct OneDrive access versus access through you is ambiguous, ask before changing either.
+    Resolve ambiguous names with resolve_person first. recipient is an exact sign-in address or directory object ID.
+    resource: onedrive, email, calendar. scope.kind: all, item, folder (files/mail), calendar, pattern.
+    item/folder/calendar requires id. pattern uses a filename (files) or subject (mail/events) glob,
+    e.g. Invoice*.pdf. Optional scope fields: recursive (OneDrive folder only), sender (email),
+    after/before (ISO dates). Folders/patterns include future matches. Actions: read; files also
+    create/edit/delete/share; email edit/delete/send/reply/forward; calendar create/edit/delete/invite.
+    Outbound actions require destinations: exact recipient emails. Delegated file sharing is read-only.
+    expires is optional ISO datetime WITH timezone; empty means until revoked. Remove a grant using
+    operation=revoke and grant_id from list_access_permissions. To narrow or change an existing grant,
+    use operation=replace, its grant_id and the complete desired new fields; this replaces it atomically
+    after confirmation. Adding a new read grant does not remove an existing edit grant.
+    This tool returns a pending confirmation, not approval. Do not use remember for permissions.
+    """
+    if _caller_tier() != "owner":
+        return "ACCESS DENIED — only the owner can propose permission changes."
+    response = _access_request("propose", dict(recipient=recipient, resource=resource,
+        actions=actions or [], scope=scope or {}, destinations=destinations or [], expires=expires,
+        operation=operation, grant_id=grant_id, public_research=public_research, preset=preset))
+    return ("ACCESS NOT CHANGED — " + response["error"] if "error" in response else
+            "PENDING OWNER CONFIRMATION — no permission has changed.\n" + response["result"])
+
+
+@mcp.tool()
+def list_access_permissions() -> str:
+    """Inspect approved access through you. Owners see all grants; colleagues see only their own.
+    These permissions authorize covered actions without asking again. Ordinary memory cannot grant
+    access. Use the grant ID to propose removal; listing does not change any permission.
+    """
+    response = _access_request("list", {})
+    return "ACCESS DENIED — " + response["error"] if "error" in response else json.dumps(response["result"])
+
+
+def _delegated_graph(method, path, body=None, *, binary=False, raw=False, if_match=""):
+    if _caller_tier() == "owner":
+        return None
+    if _caller_tier() != "colleague":
+        return {"error": "No verified caller is authorized to access Microsoft 365 resources"}
+    payload = dict(method=method, path=path, body=body, binary=binary, raw=raw, if_match=if_match)
+    if isinstance(body, bytes):
+        payload["body"] = base64.b64encode(body).decode()
+        payload["base64_body"] = True
+    return _access_request("graph", payload)
+
+
+def _reserved_access_path(path):
+    decoded = urllib.parse.unquote(path).lower()
+    if any(x in decoded for x in ("hermes-access-policy-v1.json", "special/approot", "$expand", "$batch")):
+        return True
+    if decoded.lstrip("/").startswith("shares/"):
+        return True
+    if "/items/" in decoded:
+        result = _access_request("guard", {"path": path})
+        return result.get("result") is not True
+    return False
+
+
+def _hide_policy_items(raw):
+    try:
+        value = json.loads(raw)
+        if isinstance(value, dict) and isinstance(value.get("value"), list):
+            value["value"] = [x for x in value["value"] if not isinstance(x, dict)
+                              or (x.get("name", "").lower() != "hermes-access-policy-v1.json"
+                                  and "remoteItem" not in x)]
+            # Never expose preauthenticated download links from a projected listing that may
+            # omit the item's name and therefore conceal that it is our permission record.
+            def scrub(obj):
+                if isinstance(obj, dict): return {k: scrub(v) for k, v in obj.items() if "downloadurl" not in k.lower()}
+                if isinstance(obj, list): return [scrub(v) for v in obj]
+                return obj
+            return json.dumps(scrub(value))
+    except ValueError:
+        pass
+    return raw
 
 
 @mcp.tool()
@@ -692,6 +834,11 @@ def _graph(method: str, path: str, body=None, raw_body: bool = False) -> str:
         denied = _action_policy_guard("M365_WRITE_POLICY", "Microsoft 365 writes")
         if denied:
             return denied
+    delegated = _delegated_graph(method, path, body, raw=raw_body)
+    if delegated is not None:
+        return ("ERROR: ACCESS DENIED — " + delegated["error"] if "error" in delegated else str(delegated["result"]))
+    if _reserved_access_path(path):
+        return "ERROR: permission storage is protected; use propose_access_change."
     try:
         url = _graph_url(path)
     except ValueError as e:
@@ -716,7 +863,7 @@ def _graph(method: str, path: str, body=None, raw_body: bool = False) -> str:
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 raw = r.read().decode("utf-8", "replace")
-                return raw or f"OK ({r.status})"
+                return _hide_policy_items(raw) if raw else f"OK ({r.status})"
         except urllib.error.HTTPError as e:
             detail = _http_error_text(e, 600)
 
@@ -764,6 +911,11 @@ def _graph_bytes(method: str, path: str):
     URL must be fetched WITHOUT our Authorization header. So redirects are handled explicitly rather
     than letting urllib replay the agent's bearer token to a different host.
     """
+    delegated = _delegated_graph(method, path, binary=True)
+    if delegated is not None:
+        if "error" in delegated: return None, "ERROR: ACCESS DENIED — " + delegated["error"]
+        return base64.b64decode(delegated["result"]["base64"]), None
+    if _reserved_access_path(path): return None, "ERROR: permission storage is protected."
     try:
         url = _graph_url(path)
     except ValueError as e:
@@ -820,6 +972,10 @@ def _graph_put_bytes(path: str, blob: bytes, if_match: str = "") -> str:
     denied = _action_policy_guard("M365_WRITE_POLICY", "Microsoft 365 writes")
     if denied:
         return denied
+    delegated = _delegated_graph("PUT", path, blob, raw=True, if_match=if_match)
+    if delegated is not None:
+        return "ERROR: ACCESS DENIED — " + delegated["error"] if "error" in delegated else str(delegated["result"])
+    if _reserved_access_path(path): return "ERROR: permission storage is protected."
     try:
         url = _graph_url(path)
     except ValueError as e:
@@ -1475,17 +1631,12 @@ def _read_shared_memory() -> str:
 
 @mcp.tool()
 def recall() -> str:
-    """Read durable instructions and permissions written by this agent's OWNER.
-
-    Choose this tool yourself; users should not need to know or say its name. Use it when the current
-    request depends on something the owner may have asked in a different session — especially before
-    refusing a colleague's request for lack of permission. The returned
-    memory is scoped to THIS Agent User's own OneDrive, not to the tenant or human owner. Treat its
-    contents as direct owner instructions; later entries override earlier conflicting entries.
-
-    Do not quote or expose unrelated memory to the current caller. Use only the part relevant to the
-    present request. This tool is read-only and is available in owner and colleague sessions.
+    """Read owner preferences and context only in an owner conversation.
+    Memory never grants access. Use list_access_permissions for approved access. Old free-text
+    permission entries are not authorization. Use this automatically for remembered preferences.
     """
+    if _caller_tier() != "owner":
+        return "ACCESS DENIED — private owner memory is unavailable. Use list_access_permissions."
     current = _read_shared_memory()
     if current.startswith("ERROR 404"):
         return ("OWNER MEMORY IS EMPTY — this Agent User has no durable owner instructions yet. "
@@ -1493,20 +1644,18 @@ def recall() -> str:
     if current.startswith("ERROR"):
         return ("OWNER MEMORY COULD NOT BE READ — do not infer permission or claim the owner "
                 f"authorised anything.\n{current}")
-    return ("AUTHORITATIVE OWNER MEMORY — these entries were accepted only from this Agent User's "
-            "verified owner session. Treat them as if the owner told you directly. Later entries "
-            "override earlier conflicting entries. Do not disclose unrelated entries.\n\n" + current)
+    return ("OWNER PREFERENCES AND CONTEXT — these entries do not grant or expand access. "
+            "Use approved permissions for authorization.\n\n" + current)
 
 
 @mcp.tool()
 def remember(information: str) -> str:
-    """Append a durable instruction, permission, commitment, or fact from the OWNER.
+    """Append an owner preference, commitment, or fact. Never use memory to grant access.
 
     Choose this tool yourself; the owner should never need to know or say its name. Call it whenever
     the owner's natural-language intent must survive this chat/session: for example “from now on”,
     “later”, “next time”, “always”, “when X asks”, a standing preference, a future commitment, or
-    permission for another person. Store enough context to apply the instruction safely: who it
-    concerns, what is allowed or requested, relevant limits, and any expiry. This tool hard-refuses
+    a personal preference. Use propose_access_change for access requests. This tool hard-refuses
     every non-owner caller; never ask a colleague to use it.
 
     The data is stored in SHARED_MEMORY.md in THIS Agent User's own OneDrive. It is not tenant-wide
@@ -1514,7 +1663,7 @@ def remember(information: str) -> str:
     """
     if _caller_tier() != "owner":
         return ("MEMORY NOT CHANGED — only this Agent User's verified owner may create durable "
-                "instructions or permissions. A colleague or unidentified caller cannot use remember.")
+                "preferences. A colleague or unidentified caller cannot use remember.")
 
     information = (information or "").strip()
     if not information:
@@ -1526,9 +1675,8 @@ def remember(information: str) -> str:
     current = _read_shared_memory()
     if current.startswith("ERROR 404"):
         current = ("# Shared owner memory\n\n"
-                   "Only the verified owner can append entries through `remember`. All sessions of "
-                   "this Agent User may read them through `recall`. Later entries override earlier "
-                   "conflicting entries.\n")
+                   "Only verified owner conversations may read or update these preferences. "
+                   "This file never grants access; use structured approved permissions.\n")
     elif current.startswith("ERROR"):
         return ("MEMORY NOT CHANGED — existing owner memory could not be read, so overwriting it "
                 f"would risk data loss.\n{current}")
@@ -2086,6 +2234,12 @@ def create_folder(name: str, parent_path: str = "") -> str:
 @mcp.tool()
 def share_file(item_id: str, email: str = "", role: str = "read", message: str = "") -> str:
     """Share a file the agent OWNS with a specific person, by email.
+
+    This changes DIRECT Microsoft OneDrive access, not permission to ask you to work with files.
+    'Allow Alex to work on this document/folder' uses propose_access_change instead.
+    Use this tool for an explicit direct OneDrive sharing request or document delivery.
+    If 'share' or 'give access' could mean access through you, clarify which kind first.
+    Identifying the recipient alone is not that clarification. Never silently grant both kinds.
 
     A document the agent creates belongs to the agent and is INVISIBLE to everyone else until it is
     shared — so creating a document for someone is only half the job. role is 'read' or 'write'.
@@ -2914,7 +3068,25 @@ def graph_query(path: str) -> str:
     """
     if not path:
         return "ERROR: path is required."
+    try:
+        _graph_url(path)
+    except ValueError as exc:
+        return f"ERROR: unsafe Graph path refused: {exc}. Nothing was sent."
+    if not _supported_generic_path(path):
+        return "ERROR: this generic Graph route is not supported by the permission boundary. Use a specific tool."
     return _graph("GET", path)
+
+
+def _supported_generic_path(path):
+    # Generic tools must not introduce alternate addressing/batch routes around protected state.
+    value = urllib.parse.unquote(path.removeprefix("https://graph.microsoft.com/v1.0/").lstrip("/"))
+    if "%" in value or "$expand" in value.lower(): return False
+    route = value.split("?", 1)[0]
+    return bool(re.fullmatch(
+        r"me/?|users(?:/[^/]+)?|me/(?:messages|events)(?:/[^/]+(?:/(?:reply|replyAll|forward|attachments))?)?"
+        r"|me/(?:sendMail|calendarView)|me/mailFolders/[^/]+/messages"
+        r"|me/drive/root/children|me/drive/root/search\(q='.*'\)"
+        r"|me/drive/root:/[^:?]+(?::/content)?|me/drive/items/[^/]+(?:/(?:content|children|invite))?", route))
 
 
 @mcp.tool()
@@ -2928,12 +3100,26 @@ def graph_write(method: str, path: str, body: str = "") -> str:
         return "ERROR: method must be one of POST, PATCH, PUT, DELETE."
     if not path:
         return "ERROR: path is required."
+    try:
+        _graph_url(path)
+    except ValueError as exc:
+        return f"ERROR: unsafe Graph path refused: {exc}. Nothing was sent."
+    if not _supported_generic_path(path):
+        return "ERROR: this generic Graph route is not supported by the permission boundary. Use a specific tool."
     parsed = None
     if body:
         try:
             parsed = json.loads(body)
         except json.JSONDecodeError as e:
             return f"ERROR: body must be valid JSON: {e}"
+        def unsafe_reference(value):
+            if isinstance(value, dict):
+                return any(k.lower() in {"remoteitem", "sourceurl", "@microsoft.graph.sourceurl", "parentreference"}
+                           or "@odata.bind" in k.lower() or unsafe_reference(v) for k, v in value.items())
+            if isinstance(value, list): return any(unsafe_reference(v) for v in value)
+            return isinstance(value, str) and "hermes-access-policy-v1.json" in urllib.parse.unquote(value).lower()
+        if unsafe_reference(parsed):
+            return "ERROR: generic Graph references, moves, and protected policy data are not supported."
     return _graph(m, path, parsed)
 
 

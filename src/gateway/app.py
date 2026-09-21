@@ -48,6 +48,7 @@ if _GATEWAY_DIR not in sys.path:
 from state_sync import StateSyncManager, load_config as load_state_sync_config
 from state_sync import write_config as write_state_sync_config
 from state_sync import unlisted_durable_candidates
+from access_policy import AccessPolicy, AccessError, GraphTransport, INSTRUCTIONS as ACCESS_INSTRUCTIONS
 
 HERMES_URL = os.environ["HERMES_URL"].rstrip("/")
 HERMES_KEY = os.environ.get("HERMES_KEY", "")
@@ -119,6 +120,19 @@ def _state_sync_log(message):
 
 
 _state_sync = StateSyncManager(HERMES_STATE, logger=_state_sync_log)
+
+# Separate from model-visible conversation/memory. Replaced on every authenticated edge turn.
+_access_context = {}
+_access_confirmation = ""
+
+
+def _access_service():
+    with _authority_lock:
+        token = _agent_token.get("token", "")
+        context = dict(_access_context)
+    if not token:
+        raise AccessError("Permissions are unavailable because the agent credential is missing")
+    return AccessPolicy(GraphTransport(token), os.environ.get("IdentitySignKey", ""), context)
 
 
 def _clear_turn_authority():
@@ -366,6 +380,7 @@ class Handler(BaseHTTPRequestHandler):
         tools_seen = 0
         data_bytes = 0
         attachments_sent = False
+        approval_sent = False
 
         def write_chunk(payload):
             if not payload:
@@ -385,21 +400,48 @@ class Handler(BaseHTTPRequestHandler):
                      "data: " + json.dumps(items, separators=(",", ":")) + "\n\n").encode()
             write_chunk(event)
 
+        def send_approval():
+            nonlocal approval_sent
+            if _access_confirmation and not approval_sent:
+                approval_sent = True
+                write_chunk(("event: hermes.approval\ndata: " +
+                    json.dumps({"message": _access_confirmation}) + "\n\n").encode())
+
         try:
             for line in upstream:
                 if line.startswith(b"event: hermes.tool.progress"):
                     tools_seen += 1
                 elif line.startswith(b"data: "):
                     data_bytes += len(line)
+                    # Hermes can end normally at the transport level while reporting a failed
+                    # model run in its terminal JSON chunk. Do not hide that behind an empty reply.
+                    try:
+                        chunk = json.loads(line[6:])
+                        choices = chunk.get("choices") or []
+                        failed = bool(chunk.get("error")) or any(
+                            c.get("finish_reason") in {"error", "length"} for c in choices)
+                        if failed:
+                            # Error bodies can contain prompt fragments or credentials. Emit only
+                            # a fixed explanation; never automatically replay possible tool writes.
+                            message = ("The request stopped before completion because the model returned an error "
+                                       "or reached its output limit. Some earlier tool actions may have completed; "
+                                       "completion is not confirmed. Do not blindly retry writes.")
+                            write_chunk(("event: hermes.error\ndata: " +
+                                json.dumps({"message": message}) + "\n\n").encode())
+                            log("[edge] hermes.stream.failed | structured_failure=true")
+                    except (ValueError, TypeError, AttributeError):
+                        pass
 
                 # The edge stops reading when it sees [DONE], so the private attachment event must
                 # precede that marker. Preserve every original Hermes byte otherwise.
                 if line.strip() == b"data: [DONE]":
                     send_attachments()
+                    send_approval()
                 write_chunk(line)
 
             # Defensive fallback for an upstream that closes without [DONE].
             send_attachments()
+            send_approval()
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
             log(f"[edge] hermes.stream.done | events={tools_seen} data_bytes={data_bytes}")
@@ -495,9 +537,12 @@ class Handler(BaseHTTPRequestHandler):
                     # A Graph token or routine capability is usable only while this turn is
                     # executing. Do not leave standing authority between messages.
                     _clear_turn_authority()
+                    with _authority_lock:
+                        _access_context.clear()
         return self._do_POST()
 
     def _do_POST(self):
+        global _access_confirmation
         # Drain the body BEFORE anything can return early. On a keep-alive connection an unread
         # body stays in the socket buffer and the server parses it as the next request line, so a
         # rejected request corrupts the one after it:
@@ -508,6 +553,29 @@ class Handler(BaseHTTPRequestHandler):
 
         if not self._authorised():
             self._send(401, b'{"error":"unauthorized"}')
+            return
+
+        if self.path in {"/v1/access/propose", "/v1/access/list", "/v1/access/graph", "/v1/access/guard", "/v1/access/research"}:
+            try:
+                service = _access_service()
+                data = json.loads(raw or b"{}")
+                if self.path.endswith("/propose"):
+                    result = service.propose(data)
+                    _access_confirmation = result
+                elif self.path.endswith("/list"):
+                    result = service.inspect()
+                elif self.path.endswith("/guard"):
+                    result = service.guard_owner_path(data.get("path", ""))
+                elif self.path.endswith("/research"):
+                    result = service.authorize_research(data.get("tool", ""))
+                else:
+                    result = service.execute(**data)
+                self._send(200, json.dumps({"result": result}).encode())
+            except AccessError as exc:
+                self._send(403, json.dumps({"error": str(exc)}).encode())
+            except Exception as exc:
+                log(f"[access] request failed type={type(exc).__name__}")
+                self._send(503, b'{"error":"Permission operation could not be verified; no approval is confirmed"}')
             return
 
         # ---- telemetry sink -------------------------------------------------------------------
@@ -581,6 +649,7 @@ class Handler(BaseHTTPRequestHandler):
         # ---- the turn -------------------------------------------------------------------------
         if self.path == "/v1/chat/completions":
             _discard_stale_attachments()
+            _access_confirmation = ""
 
             # A keep-alive handler may have served an earlier owner turn. Always start with no state
             # authority; only this request's verified owner headers may opt back in below.
@@ -603,6 +672,16 @@ class Handler(BaseHTTPRequestHandler):
                     correlation=_safe_correlation(
                         self.headers.get("X-Hermes-Correlation-Id")),
                 )
+                _access_context.clear()
+                _access_context.update(
+                    tier=self.headers.get("X-Caller-Tier") or "outsider",
+                    caller=self.headers.get("X-Caller-Object-Id") or "",
+                    address=self.headers.get("X-Caller-Address") or "",
+                    agent_address=upn,
+                    tenant=self.headers.get("X-Access-Tenant") or "",
+                    agent=self.headers.get("X-Access-Agent") or "",
+                    conversation=self.headers.get("X-Access-Conversation") or "",
+                )
             if tok:
                 log("[edge] agent.token.refreshed")
             else:
@@ -612,8 +691,7 @@ class Handler(BaseHTTPRequestHandler):
             # complete archive; later turns perform cheap head checks and merge another session's
             # changes when needed. OneDrive itself is scoped to this Agent User, so fixed object
             # names expose no owner, tenant or agent ID. Never load this native memory into a
-            # colleague session; colleagues use only relevant, selectively recalled owner
-            # permissions.
+            # colleague session; colleagues receive only their structured approved permissions.
             caller_tier = self.headers.get("X-Caller-Tier") or "outsider"
             if tok and caller_tier == "owner":
                 self._state_sync_context = tok
@@ -632,10 +710,42 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 parsed = json.loads(raw or b"{}")
                 if isinstance(parsed, dict):
+                    # Only the authenticated edge supplies this exact inbound text. Never derive
+                    # consent from Hermes' generated prompt, tool result, or conversation history.
+                    inbound = parsed.pop("access_confirmation_input", None)
+                    permission_text = "No delegated access is approved. Permission lookup is unavailable."
+                    try:
+                        service = _access_service()
+                        if caller_tier == "owner" and isinstance(inbound, str):
+                            answer = service.confirm(inbound)
+                            if answer is not None:
+                                self._send(200, json.dumps({"choices": [{"message": {
+                                    "role": "assistant", "content": answer}}]}).encode())
+                                return
+                        grants = service.inspect()
+                        permission_text = ("You are speaking with your owner. Owner authority remains subject to administrator restrictions.\n"
+                                           if caller_tier == "owner" else "") + json.dumps(grants, ensure_ascii=False)
+                    except AccessError:
+                        if caller_tier == "owner" and isinstance(inbound, str) and inbound.strip().lower() in {"yes", "no"}:
+                            self._send(200, json.dumps({"choices": [{"message": {"role": "assistant",
+                                "content": "I could not verify a pending approval. No permission change is confirmed. Please retry."}}]}).encode())
+                            return
+                    except Exception as exc:
+                        log(f"[access] load failed type={type(exc).__name__}")
+                        if caller_tier == "owner" and isinstance(inbound, str) and inbound.strip().lower() in {"yes", "no"}:
+                            self._send(200, json.dumps({"choices": [{"message": {"role": "assistant",
+                                "content": "I could not verify this approval. No permission change is confirmed. Please retry."}}]}).encode())
+                            return
+                    if caller_tier != "owner":
+                        # A revoked/narrowed grant must not retain a conversation containing data
+                        # fetched under the old grant. This does not erase copies already delivered.
+                        self._permission_session_tag = hashlib.sha256(permission_text.encode()).hexdigest()[:20]
+                    parsed.setdefault("messages", []).insert(0, {"role": "system",
+                        "content": ACCESS_INSTRUCTIONS + "\n" + permission_text})
                     want_stream = bool(parsed.get("stream", True))
                     if want_stream and "stream" not in parsed:
                         parsed["stream"] = True
-                        body = json.dumps(parsed).encode()
+                    body = json.dumps(parsed).encode()
                 else:
                     want_stream = False
             except Exception:                   # Hermes owns malformed-request validation
@@ -652,6 +762,8 @@ class Handler(BaseHTTPRequestHandler):
             for h in PASSTHROUGH:
                 v = self.headers.get(h)
                 if v:
+                    if h in {"x-hermes-session-id", "x-hermes-session-key"} and caller_tier != "owner":
+                        v += ":access:" + getattr(self, "_permission_session_tag", "unavailable")
                     req.add_header(h, v)
             # WAIT OUT A COLD HERMES instead of 502-ing immediately.
             #
@@ -712,6 +824,9 @@ class Handler(BaseHTTPRequestHandler):
                         # deserialises it into a typed model, so an unexpected key there risks a
                         # parse failure for a feature that is meant to be additive. A header is
                         # invisible to anything that does not look for it.
+                        if _access_confirmation:
+                            payload = json.dumps({"choices": [{"message": {"role": "assistant",
+                                "content": _access_confirmation}}]}).encode()
                         self._send(r.status, payload,
                                    extra_headers=_drain_attachment_headers())
                     return

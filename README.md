@@ -330,7 +330,8 @@ Agent User therefore has a separate archive without a tenant-wide bucket, storag
 address, or platform user ID in the key. Only verified owner turns and cryptographically bound
 owner-authorized Routines restore or update it. Colleague sessions remain isolated: they neither
 receive the owner's native Hermes memory nor teach the owner's durable skill library. The separate
-`recall` tool continues to disclose only owner permissions relevant to a colleague's current request.
+`recall` tool is owner-only. Colleague access is controlled by the structured permissions described
+below; ordinary memory, including historical permission text, never grants access.
 
 The image supplies defaults from `config/state-sync.defaults.json`; the Agent User's persisted state
 stores only owner changes in `/files/hermes/state-sync-overrides.json`. A new image can therefore add
@@ -350,6 +351,90 @@ deployment-generated configuration, runtime code and dependencies, conversation/
 logs, caches, checkpoints, temporary files, sockets, PID/lock files, and SQLite WAL/SHM files are
 never archived. Symlinks are not followed. Restore validates every tar member and atomically overlays
 regular selected files; it never extracts a path supplied outside `HERMES_HOME`.
+
+### Model continuation compatibility
+
+The Foundry image includes a narrow Responses-compatibility overlay: replayed assistant text keeps
+its `annotations` array, and encrypted reasoning keeps its original `id`. Foundry rejects reasoning
+replayed without that ID even with `store=false`; this can otherwise break model continuation after
+tools across primary and fallback models. Missing-ID legacy reasoning records are omitted rather
+than given fabricated IDs. Structured stream failures are surfaced as a stopped request, not a
+successful empty response; earlier tool side effects must be checked before retrying.
+
+### Approved access through Hermes
+
+Colleagues need structured owner-approved grants to read or change the agent's Microsoft 365
+resources. The default `internal` write policy still permits delegation within the tenant, but is
+not sufficient authorization by itself. Administrator `owner-only` or `disabled` policies remain
+upper bounds and cannot be overridden by a grant.
+
+The owner can say, for example, "Let Alex read documents in the Invoices folder." Hermes resolves
+the person and resource, then calls `propose_access_change`. A fixed confirmation shows the exact
+person, scope, actions, allowed outbound recipients, and expiry. The owner replies exactly `Yes`
+or `No` in the same conversation within 15 minutes. The verified inbound reply is handled before
+calling Hermes. Other text cancels the pending proposal and returns to Hermes so it can prepare a
+revision. Repeating `Yes` does not apply a proposal twice. `operation=replace` atomically replaces an
+existing grant after confirmation, allowing a downgrade without leaving an older write grant active.
+`list_access_permissions` shows the owner
+all active grants and a colleague only their own; removing a grant uses the same confirmation flow.
+
+For natural requests such as "Let Alex work on Acme," Hermes proposes the `collaboration` preset:
+read, create and edit matching files, plus public web research. For a single existing file, it
+proposes read/edit rather than creation elsewhere. The confirmation explains the current and
+proposed access in ordinary language, without internal IDs or JSON. Nothing changes until approved.
+Explicit restrictions use custom permissions. Ambiguous requests such as "full access plus email"
+require clarification first; email, calendar, deletion and sharing are not included by default.
+Multiple resource grants are confirmed separately. Filename rules match names, not document topics.
+
+These permissions grant **access through the agent**, not native Microsoft access. A colleague
+with `read` can ask for searches and summaries. They cannot edit, delete, send, or share unless
+those actions are separately approved. A later `share_file` request requires an explicit `share`
+grant for that file and destination. Delegated native sharing currently grants read access only.
+Revoking a Hermes grant does not revoke an already created Microsoft sharing permission or recall
+data already delivered to someone.
+
+| Resource | Supported scopes | Actions |
+| --- | --- | --- |
+| Agent OneDrive | All eligible items, an item ID, a folder ID (optionally recursive), filename wildcard | Read/search, create files, edit, delete files, share with approved recipients |
+| Agent mailbox | All messages, a message ID, a folder ID, subject wildcard; optional sender/date restrictions | Read/search, mark read/category/flag, delete, send, reply, forward to approved recipients |
+| Agent calendar | All events, an event ID, a calendar ID, subject wildcard; optional date restrictions | Read/search, create, edit, delete, invite approved attendees |
+
+Folder/all/pattern grants include future matching items. Patterns match filenames or subjects, not
+arbitrary code or regular expressions. Native folder deletion/moves, upload sessions, outgoing mail
+attachments, alternate drives, groups, Teams resources, skills/code execution, and Routine management
+are not delegated by this feature. Unknown Graph routes/options fail closed. Explicitly approved
+`public_research` permits public web search and page fetching. The confirmation discloses that queries
+and URLs reach external services and research is not constrained by the filename scope. Instructions
+prohibit sending private contents or secrets; this is not a content-level data-loss-prevention filter.
+Browser automation and code execution remain owner-only. Routine execution remains tied to its signed owner
+binding; routines cannot propose or confirm access changes.
+
+The permission service verifies actual caller IDs and current resource metadata on each delegated
+tool call. Search/list results are filtered before reaching Hermes, and preauthenticated download
+links are removed. Lists examine at most 100 candidates per call and report when more may exist;
+they do not expose raw continuation URLs. Delegated downloads are capped at 16 MB. Generic Graph
+and binary document paths use the same broker. A change in a colleague's effective grants starts a
+fresh Hermes conversation key so old model history is not reused under narrower permissions.
+
+State is stored separately as `hermes-access-policy-v1.json` in the Agent User's OneDrive app folder,
+outside `HERMES_HOME` and memory/skill snapshots. It contains grants, expiring proposals, and a bounded
+100-entry approval audit. Records are signed using a domain-separated HMAC with `IdentitySignKey`,
+bound to tenant and Agent User, and updated with ETag preconditions. Model-facing tools cannot sign,
+approve, read, or overwrite the policy record; direct and item-ID paths are guarded. This is an
+application boundary within our trusted runtime, not a separate Azure storage principal. A tenant
+administrator with the underlying credentials can still modify storage; corrupted signatures fail
+closed. Rotating `IdentitySignKey` requires a controlled policy migration/reapproval because existing
+signatures no longer validate. Do not restore old policy files as part of ordinary memory rollback.
+
+Old free-text permissions in `SHARED_MEMORY.md` are not migrated automatically: the owner must
+confirm structured grants. `remember`/`recall` now retain only private owner preferences/context and
+cannot authorize a colleague. All agent instructions use the same "Permissions for this
+conversation" language and tell Hermes to perform approved actions without asking again.
+
+Rollout must update all serving versions and retire sessions running the old memory-based rules.
+Local tests cover approval interception, signatures, conflicts, scope checks, search filtering,
+binary paths, calendar notifications and revocation. A live Teams/M365 acceptance run is still
+required before treating this as a deployed tenant security boundary.
 
 ### Save and restore lifecycle
 

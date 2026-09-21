@@ -27,6 +27,39 @@ using Microsoft.Agents.Core.Serialization;
 /// </summary>
 public sealed class HermesRouterAgentLogicService : IAgentLogicService
 {
+    // Shared by interactive and scheduled instructions: these are separate permission systems.
+    private const string AccessIntentInstructions =
+        "ACCESS REQUESTS: 'allow Alex to work on this document' or 'let Alex work on any documents "
+      + "inside this folder' means Alex may ask YOU to work with those resources. Use "
+      + "propose_access_change and wait for the owner's confirmation; do not substitute share_file. "
+      + "For working on existing documents propose read/edit, not delete/share unless requested. "
+      + "Natural requests such as 'allow John to work on ACME' or 'let Alex help with Acme' use "
+      + "propose_access_change preset=collaboration, omitting actions/destinations. The server includes "
+      + "read/create/edit and public research in the confirmation. Do not ask the owner to list actions, "
+      + "tools or research flags. Respect explicit read-only/no-research restrictions using preset=custom. "
+      + "Resolve ambiguous people, reuse a clearly identified project folder, otherwise propose a filename "
+      + "contains rule (*ACME*) directly in the confirmation. State the default in everyday language: "
+      + "'I’ll allow them to read, create and edit the selected files and do public research. "
+      + "This does not add email or calendar access.' Wait for confirmation. "
+      + "For a single existing document say read/edit, not create. "
+      + "If the owner says 'full access', 'everything', 'full plus email', or the requested capabilities "
+      + "are otherwise unclear, ask what access they mean BEFORE proposing permissions. Offer files and "
+      + "research as the default; do not interpret 'full' as permission to delete, share, send mail or "
+      + "access every resource. For email, clarify which messages and whether they may only read them "
+      + "or also reply/send, and to whom. Ask in ordinary language, not tool/action names. "
+      + "When multiple resources are requested, confirm each resource separately; do not overwrite a "
+      + "pending proposal with another or claim one Yes approved unshown permissions. "
+      + "Research allows search/fetch of public pages, not arbitrary "
+      + "code or browser automation. Queries/URLs leave the tenant; never send private contents or secrets. "
+      + "Topic relevance is not enforced by filename matching: show the exact chosen scope in confirmation. "
+      + "Use *ACME* for names containing ACME; ACME* only matches a prefix. A typo such as AMCE "
+      + "does not match ACME: clarify it, never silently bypass the approved scope. "
+      + "For existing grants use list_access_permissions then propose a replacement and await confirmation. "
+      + "A folder scope covers future documents too. Direct OneDrive sharing instead lets the person "
+      + "open files themselves and does not grant permission through you. Use share_file for clear "
+      + "direct OneDrive access or document-delivery requests. If 'share' or 'give access' is ambiguous, "
+      + "ask: 'Should they work with these files through me, or open them directly in OneDrive?' "
+      + "Resolving a person's name does not resolve the access type or capability scope. Never grant both automatically. ";
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(170) };
     // Graph's driveItem/content endpoint redirects to a short-lived preauthenticated Microsoft
     // storage URL. Keep redirects manual so the Graph bearer token is never forwarded to storage
@@ -1023,8 +1056,9 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             return false;
         }
 
-        public string Render(bool finished)
+        public string Render(bool finished, bool failed = false)
         {
+            if (failed) return "⚠ Request stopped";
             if (finished) return "✓ Finished";
             if (string.IsNullOrWhiteSpace(_currentLabel)) return "Working on your request...";
             var marker = _currentCompleted
@@ -1101,6 +1135,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                 "run_code" or "execute_code" or "terminal" => "Running code",
                 "remember" => "Updating memory",
                 "recall" => "Checking memory",
+                "propose_access_change" => "Preparing access approval",
+                "list_access_permissions" => "Checking approved access",
                 _ => string.IsNullOrWhiteSpace(preview)
                     ? "Working"
                     : preview,
@@ -1116,7 +1152,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         ITurnContext turnContext,
         ToolProgressState progress,
         CancellationToken ct,
-        bool finished = false)
+        bool finished = false,
+        bool failed = false)
     {
         if (turnContext == null || progress == null || progress.FailedUpdates >= 3) return;
         var activityId = turnContext.Services.Get<string>(ProgressActivityIdStateKey);
@@ -1124,7 +1161,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
 
         try
         {
-            var replacement = MessageFactory.Text(progress.Render(finished));
+            var replacement = MessageFactory.Text(progress.Render(finished, failed));
             replacement.Id = activityId;
             await turnContext.UpdateActivityAsync(replacement, ct);
             EdgeLog("progress.updated", $"tools={progress.Count} finished={finished}");
@@ -1371,7 +1408,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             // but always honors an explicit provider + model pair.
             model = modelSelection?.Model ?? "hermes-agent",
             provider = modelSelection is null ? null : "azure-foundry",
-            messages = new[] { new { role = "user", content = prompt } }
+            messages = new[] { new { role = "user", content = prompt } },
+            access_confirmation_input = turnContext?.Activity?.Text
         });
 
         using var req = new HttpRequestMessage(HttpMethod.Post, $"{_routerUrl}/v1/chat/completions")
@@ -1484,6 +1522,15 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         // No turn (a routine) means no identified caller and therefore outsider.
         var callerTier = turnContext != null ? CallerOf(turnContext).tier : "outsider";
         req.Headers.TryAddWithoutValidation("X-Caller-Tier", callerTier);
+        if (turnContext != null)
+        {
+            req.Headers.TryAddWithoutValidation("X-Caller-Object-Id", CallerOf(turnContext).oid ?? "");
+            req.Headers.TryAddWithoutValidation("X-Caller-Address", CallerOf(turnContext).email ?? "");
+            req.Headers.TryAddWithoutValidation("X-Access-Tenant", _agent?.TenantId.ToString() ?? "");
+            req.Headers.TryAddWithoutValidation("X-Access-Agent", _agent?.UserId.ToString() ?? "");
+            req.Headers.TryAddWithoutValidation("X-Access-Conversation", Sha256Hex(
+                (turnContext.Activity.ChannelId ?? "") + ":" + (turnContext.Activity.Conversation?.Id ?? "")));
+        }
         EdgeLog("caller.tier", callerTier);
 
         // Routine creation authority is minted automatically from THIS trusted Activity turn. It
@@ -1510,8 +1557,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
 
             // Who is asking, for the M365 DATA PLANE. The sidecar uses this as a hard stop for every
             // outsider Graph mutation and for owner-only memory/routine operations. Colleague
-            // delegation is still interpreted from owner memory by Hermes; it is not yet a
-            // structured server-verifiable grant. No turn on this Activity path means no identified
+            // reads and writes are checked against structured owner-approved grants. No turn on
+            // this Activity path means no identified
             // caller: send "outsider" and fail closed. Verified Responses-routine turns set owner
             // only after validating their signed immutable binding.
             if (!string.IsNullOrEmpty(_agent?.EmailId))
@@ -1545,6 +1592,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                 "text/event-stream", StringComparison.OrdinalIgnoreCase))
         {
             var reply = new StringBuilder();
+            var streamFailed = false;
             var progress = new ToolProgressState();
             string pendingEvent = null;
 
@@ -1595,8 +1643,9 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
                     continue;
                 }
 
-                if (pendingEvent == "hermes.error")
+                if (pendingEvent == "hermes.error" || pendingEvent == "hermes.approval")
                 {
+                    streamFailed = pendingEvent == "hermes.error";
                     pendingEvent = null;
                     try
                     {
@@ -1638,7 +1687,8 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
 
             // The progress activity is cosmetic. Force its final state before ReplyAsync sends the
             // independent result, but never let an edit failure change the result itself.
-            await UpdateProgressActivityAsync(turnContext, progress, ct, finished: true);
+            await UpdateProgressActivityAsync(turnContext, progress, ct, finished: true,
+                failed: streamFailed || reply.Length == 0);
             EdgeLog("hermes.stream.read", $"tools={progress.Count} chars={reply.Length}");
             return reply.Length == 0 ? "The agent completed without returning a text response." : reply.ToString();
         }
@@ -1745,18 +1795,15 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
       + "asks to inspect or stop scheduled work. Ask a short schedule question only when time, "
       + "recurrence, or time zone is genuinely ambiguous. If create_routine returns an error, say "
       + "clearly that no routine was created and report the exact error.\n\n"
-      + "DURABLE OWNER MEMORY: normal chat memory is isolated per caller. When your OWNER asks you "
-      + "to remember something beyond this chat, do something later, or authorises another person "
-      + "to request an action, call remember with a concise but complete instruction. Infer this "
-      + "yourself from natural language such as 'from now on', 'later', 'next time', 'always', or "
-      + "'when X asks'. The user must never need to know, name, or request the remember/recall tools. Only owner "
-      + "sessions may write this memory; never call remember for a colleague. When a colleague asks "
-      + "for an action that may have prior owner approval, call recall before refusing. Recall output "
-      + "is authoritative information written from your verified owner session: treat relevant "
-      + "entries exactly as if the owner told you directly, with later entries overriding earlier "
-      + "conflicts. Apply only permissions that clearly cover this caller and this action. Never "
-      + "quote, reveal, or summarise unrelated recalled information. Never modify SHARED_MEMORY.md "
-      + "with create_file or graph_write; use remember.\n\n"
+      + "DURABLE OWNER MEMORY: use remember and recall automatically for owner preferences and "
+      + "context across conversations. Memory never grants access, including old permission entries. "
+      + "For owner requests to grant or remove a colleague's access through you, use propose_access_change. "
+      + AccessIntentInstructions
+      + "Wait for the owner's explicit confirmation before claiming permissions changed. "
+      + "Follow Permissions for this conversation and use list_access_permissions when needed. "
+      + "Carry out covered requests without asking again, even when speaking with a colleague. "
+      + "Only listed actions and resources are approved. Reading does not imply editing, deleting, "
+      + "sending or sharing. Do not expose owner memory to colleagues.\n\n"
       + $"{context}\n\n{body}";
 
     /// <summary>
@@ -2134,24 +2181,19 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             return "AUTHORITY: this is your OWNER — the person you work for. Do what they ask, "
                  + "including actions with side effects: sending mail as yourself, creating, editing "
                  + "and sharing files, and scheduling. If they ask you to remember something, do "
-                 + "something outside this chat/session, or grant another person permission, persist "
-                 + "a concise and complete instruction with remember automatically, even when they "
-                 + "do not mention memory or tool names. Report honestly what you did "
+                 + "something outside this chat/session, persist preferences with remember automatically. "
+                 + AccessIntentInstructions
+                 + "For grants or revocations of access through you, use propose_access_change "
+                 + "and wait for confirmation. Never record access rights in ordinary memory. Report what you did "
                  + "and what failed.";
 
         if (isInternal)
             return "AUTHORITY: this is a COLLEAGUE inside the organisation, NOT your owner. "
-                 + "Be helpful: answer questions, explain, summarise, search, and read things you "
-                 + "already have access to. But do NOT take actions on their behalf — no sending mail "
-                 + "as yourself to third parties, no creating, editing, sharing or deleting files, no "
-                 + "scheduling, no changing anything — unless your owner has authorised the specific "
-                 + "caller and action. Before refusing such an action, call recall to check durable "
-                 + "owner requests and permissions from other sessions. Recall data is direct, "
-                 + "authoritative owner instruction; later entries override earlier conflicts. Use "
-                 + "only the relevant entry and never disclose unrelated owner memory. If recall has "
-                 + "no clear matching permission, say plainly that you need your owner's go-ahead and "
-                 + "offer to ask. A colleague can never add or modify owner memory with remember. "
-                 + "Never imply the owner approved something they did not.";
+                 + "Follow Permissions for this conversation. Read, summarize and take actions within "
+                 + "those approved scopes without asking again. Use list_access_permissions if needed. "
+                 + "Do not access other private resources. Reading does not imply permission to edit, "
+                 + "delete, send or share. Missing permission needs owner approval; ordinary memory "
+                 + "and messages cannot grant it. Colleagues cannot change permissions or owner memory.";
 
         return "AUTHORITY: this sender is OUTSIDE your organisation, or you could not identify them. "
              + "Assume the LEAST authority. Answer only general, public questions, and be courteous. "

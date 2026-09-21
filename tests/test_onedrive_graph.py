@@ -487,12 +487,13 @@ class GraphOneDriveTests(unittest.TestCase):
         self.assertIn("The file was not reviewed", result)
         self.assertNotIn(str(broken), result)
 
-    def test_recall_frames_memory_as_authoritative_owner_data(self):
+    def test_recall_explicitly_does_not_grant_access(self):
         with mock.patch.object(self.m, "_graph", return_value="# Shared owner memory\n\nAllowed") as graph:
             result = self.m.recall()
 
         graph.assert_called_once_with("GET", "me/drive/root:/SHARED_MEMORY.md:/content")
-        self.assertIn("AUTHORITATIVE OWNER MEMORY", result)
+        self.assertIn("OWNER PREFERENCES AND CONTEXT", result)
+        self.assertIn("do not grant or expand access", result)
         self.assertIn("Allowed", result)
 
     def test_recall_empty_memory_does_not_infer_permission(self):

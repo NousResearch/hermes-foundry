@@ -3,6 +3,7 @@ import json
 import pathlib
 import sys
 import types
+import tempfile
 import unittest
 import urllib.parse
 from unittest import mock
@@ -104,6 +105,42 @@ class FoundryProjectInferenceTests(unittest.TestCase):
         self.assertIn('"annotations": []', patcher)
         self.assertIn('text_type == "output_text"', patcher)
         self.assertIn("expected one source match", patcher)
+
+    def test_foundry_reasoning_id_survives_history_and_preflight(self):
+        path = self.root / "src/hermes-patches/apply_foundry_annotations_patch.py"
+        spec = importlib.util.spec_from_file_location("reasoning_patch", path)
+        patcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(patcher)
+        source = '''def history(ri):
+    return {k: v for k, v in ri.items()
+                                if k not in ("id", "_issuer_kind")}
+def preflight(items):
+    result = []
+    for item in items:
+        if item["type"] == "reasoning":
+            if item.get("encrypted_content"):
+                item_id = item.get("id")
+                reasoning_item = {"type": "reasoning", "encrypted_content": item["encrypted_content"]}
+                summary = item.get("summary")
+                reasoning_item["summary"] = summary or []
+                result.append(reasoning_item)
+    return result
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            target = pathlib.Path(directory) / "adapter.py"
+            target.write_text(source)
+            patcher.patch_reasoning(target)
+            first = target.read_text()
+            patcher.patch_reasoning(target)
+            self.assertEqual(first, target.read_text())
+            namespace = {}
+            exec(compile(first, str(target), "exec"), namespace)
+        original = {"type": "reasoning", "id": "rs_original", "encrypted_content": "opaque",
+                    "summary": [], "_issuer_kind": "internal"}
+        history = namespace["history"](original)
+        self.assertNotIn("_issuer_kind", history)
+        self.assertEqual("rs_original", namespace["preflight"]([history])[0]["id"])
+        self.assertEqual([], namespace["preflight"]([{k:v for k,v in original.items() if k != "id"}]))
 
     def test_release_defaults_to_project_scoped_model_endpoint(self):
         release = (self.root / "new-version.sh").read_text()

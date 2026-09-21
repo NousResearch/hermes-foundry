@@ -114,6 +114,9 @@ public sealed class HermesResponseHandler(
         // scheduled execution as owner-authorized only after signature verification above; an
         // unsigned Responses caller cannot set this header or receive a Graph token.
         req.Headers.TryAddWithoutValidation("X-Caller-Tier", "owner");
+        req.Headers.TryAddWithoutValidation("X-Access-Tenant", binding.TenantId);
+        req.Headers.TryAddWithoutValidation("X-Access-Agent", binding.AgentUserId);
+        // No interactive owner/conversation headers: scheduled work cannot confirm access grants.
 
         // The identity pair and required authorization mode come from the verified routine binding,
         // not deployment-wide config and not model input. The binding contains no OAuth token,

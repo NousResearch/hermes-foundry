@@ -69,6 +69,9 @@ class GraphContractTests(unittest.TestCase):
         self.authority.start()
         self.addCleanup(self.authority.stop)
         self.m = _load_sidecar()
+        guard = mock.patch.object(self.m, "_access_request", return_value={"result": True})
+        guard.start()
+        self.addCleanup(guard.stop)
 
     def test_sidecar_never_reuses_token_after_turn_authority_disappears(self):
         self.m._TOKEN_URL = "http://127.0.0.1:8088"
