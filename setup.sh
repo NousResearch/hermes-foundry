@@ -10,10 +10,14 @@ case "${1:-}" in
   --preview) PROVISION_MODE="preview" ;;
   --validate) PROVISION_MODE="validate" ;;
   --auth-only) PROVISION_MODE="auth-only" ;;
+  --continue) PROVISION_MODE="continue" ;;
+  --existing) PROVISION_MODE="existing" ;;
   -h|--help)
     printf '%s\n' \
-      "Usage: ./setup.sh [--preview|--validate|--auth-only]" \
-      "  no option    Authenticate, provision Azure, build Hermes, and submit the private request." \
+      "Usage: ./setup.sh [--continue|--existing|--preview|--validate|--auth-only]" \
+      "  no option    Guided prerequisites, Azure deployment, approval, bot routing, activation and testing." \
+      "  --continue   Resume the saved installation at its next required step." \
+      "  --existing   Verify/adopt an existing deployment, without provisioning infrastructure." \
       "  --preview    Show the Azure resource plan without creating anything." \
       "  --validate   Authenticate and run read-only Azure prerequisites; create no resources." \
       "  --auth-only  Install tools and authenticate without running azd provisioning."
@@ -21,6 +25,7 @@ case "${1:-}" in
     ;;
   *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
 esac
+[[ $# -le 1 ]] || { printf 'Use only one setup option.\n' >&2; exit 2; }
 
 info() {
   printf '\n%s\n' "$*"
@@ -121,7 +126,7 @@ install_azd() {
 }
 
 install_support_tools() {
-  if have python3 && have openssl; then
+  if have python3 && have openssl && python3 -c 'import venv, ensurepip' >/dev/null 2>&1; then
     return
   fi
 
@@ -135,7 +140,7 @@ install_support_tools() {
     Linux)
       if have apt-get; then
         sudo apt-get update
-        sudo apt-get install -y python3 openssl
+        sudo apt-get install -y python3 python3-venv openssl
       else
         fail "Install Python 3 and OpenSSL, then rerun this script."
       fi
@@ -144,6 +149,8 @@ install_support_tools() {
 
   have python3 || fail "Python 3 is required but was not installed successfully."
   have openssl || fail "OpenSSL is required but was not installed successfully."
+  python3 -c 'import venv, ensurepip' >/dev/null 2>&1 || \
+    fail "Python venv/ensurepip support is required for Microsoft sign-in. Install python3-venv (Debian/Ubuntu) or a complete Python installation and retry."
 }
 
 login_with_azure_cli() {
@@ -315,14 +322,26 @@ prepare_azd_environment() {
 }
 
 main() {
+  cd "$SCRIPT_DIR"
   have curl || fail "curl is required. Install curl and rerun this script."
 
   install_azure_cli
   install_azd
   install_support_tools
-  select_customer_tenant
-  ensure_azure_login
-  select_customer_subscription
+  if [[ "$PROVISION_MODE" == "continue" ]]; then
+    CUSTOMER_TENANT_ID=$(python3 scripts/tenant_setup.py --field tenant)
+    AZURE_SUBSCRIPTION_ID=$(python3 scripts/tenant_setup.py --field subscription)
+    SELECTED_ACCOUNT_NAME="an administrator in the saved customer tenant"
+    ensure_azure_login
+    az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+  else
+    if [[ "$PROVISION_MODE" =~ ^(apply|existing)$ && -f deployment-output/setup-state.json ]]; then
+      fail "A saved installation exists. Run ./setup.sh --continue to resume it."
+    fi
+    select_customer_tenant
+    ensure_azure_login
+    select_customer_subscription
+  fi
   ensure_azd_login
 
   export AZURE_TENANT_ID="$CUSTOMER_TENANT_ID"
@@ -346,7 +365,18 @@ main() {
     return
   fi
 
-  prepare_azd_environment
+  if [[ "$PROVISION_MODE" == "continue" ]]; then
+    environment_name=$(python3 scripts/tenant_setup.py --field environment)
+    azd env select "$environment_name"
+    export HERMES_PROVISION_MODE="apply"
+  elif [[ "$PROVISION_MODE" == "existing" ]]; then
+    read -r -p "Existing azd environment name (see 'azd env list'): " environment_name
+    [[ "$environment_name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]] || fail "Invalid environment name."
+    azd env select "$environment_name"
+  else
+    prepare_azd_environment
+    environment_name="hermes-${CUSTOMER_TENANT_ID%%-*}"
+  fi
 
   if [[ "$PROVISION_MODE" == "auth-only" ]]; then
     printf 'Authentication-only setup is complete. No Azure resources were changed.\n'
@@ -357,8 +387,16 @@ main() {
       azd provision --preview
       return
     fi
-    printf 'Starting the Hermes private-tenant provisioning flow with azd.\n'
-    azd provision
+    printf 'Starting the Hermes guided installation workflow.\n'
+    if [[ "$PROVISION_MODE" == "continue" ]]; then
+      python3 scripts/tenant_setup.py --continue
+    elif [[ "$PROVISION_MODE" == "existing" ]]; then
+      python3 scripts/tenant_setup.py --existing --tenant "$CUSTOMER_TENANT_ID" \
+        --subscription "$AZURE_SUBSCRIPTION_ID" --environment "$environment_name"
+    else
+      python3 scripts/tenant_setup.py --tenant "$CUSTOMER_TENANT_ID" \
+        --subscription "$AZURE_SUBSCRIPTION_ID" --environment "$environment_name"
+    fi
   else
     printf '%s\n' \
       "The login setup is complete." \

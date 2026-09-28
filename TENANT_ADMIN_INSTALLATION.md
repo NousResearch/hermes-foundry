@@ -5,10 +5,42 @@ this flow submits Hermes to Azure Marketplace, AppSource, the public Teams Store
 catalog. In this guide, **publish** means making the custom blueprint available inside the
 customer's own Microsoft 365 tenant after its administrator approves it.
 
-This is the primary installation guide for a Microsoft 365 tenant administrator. It assumes Nous
-has already prepared and published the **Hermes Agent on Foundry** blueprint for the target tenant,
-or has supplied a tenant-specific Agent 365 installation package. The administrator does not need
-to clone this repository, build a container, create certificates, or run Azure CLI commands.
+This is the primary installation guide for a Microsoft 365 tenant administrator. There are two paths:
+
+- **New tenant, nothing deployed:** obtain this repository/package from Nous, open a terminal in its
+  root folder and run `./deploy.sh` (the same installer as `./setup.sh`). It installs its Azure tools,
+  guides sign-in and tenant/subscription selection, builds the image in Azure, provisions the runtime,
+  submits the private blueprint, and pauses for the portal actions below. No Nous-operated shell or
+  copied tenant IDs from another deployment are required. Use macOS or Ubuntu/Debian (WSL on Windows).
+- **Runtime and blueprint already prepared:** use the portal steps below with your deployment
+  operator. A ZIP alone does not deploy the runtime. Only this prepared path is portal-only.
+
+Resume an interrupted installation with `./deploy.sh --continue`. Do not delete its local checkpoint
+or create another instance to retry a failed step. The installer prints portal URLs and asks for
+confirmation at each manual boundary; it does not buy licenses or accept legal terms for you.
+
+For an older deployment without a setup checkpoint, use `./deploy.sh --existing` and select its
+existing azd environment. This reads the live agent and finds its matching Azure Bot, displays the
+target for confirmation, and starts at approval/routing checks without provisioning infrastructure,
+publishing a new blueprint or assigning roles. If old azd blueprint/bot outputs differ, the script
+warns explicitly and preserves them; the confirmed live target is saved only in the private setup
+checkpoint. Later runs use `--continue`. This is not a migration of the old Bicep environment.
+
+### Guided installation sequence
+
+| Stage | Script / administrator action |
+| --- | --- |
+| Prerequisites | Admin confirms Frontier enrollment, a free agent seat, Teams access, Azure deployment/role-assignment permissions and regional model quota before resource creation |
+| Azure deployment | Script registers providers, deploys infrastructure/models, builds the image, creates and publishes the tenant blueprint, declares Graph scopes, and installs routine role automation by default |
+| Microsoft 365 approval | Script pauses; admin opens Requests, reviews scopes, grants consent, selects hiring audience and activates the blueprint, then presses Enter |
+| Bot configuration | Admin completes the script's separate Microsoft sign-in; script configures and verifies Bot Based routing |
+| Runtime activation | Script verifies the serving version; if disabled, asks permission and calls the Foundry enable API, then reads back state |
+| First instance | Admin uses Microsoft 365 Add/Create instance, or the allowed employee uses Teams Create instance; script verifies the supplied instance email belongs to this blueprint using read-only Graph queries |
+| Acceptance | Owner tests Teams, OneDrive and mail, then a routine if installed; script records operator confirmations separately from API checks |
+
+The installer code and mocked tests do not establish a completed clean-tenant acceptance run. If a
+portal prerequisite or test fails, leave setup paused and resume after resolving it. A successful
+deployment or approval alone is not proof of message delivery.
 
 > [!IMPORTANT]
 > A ZIP package is linked to an Entra Agent Identity Blueprint in a specific tenant. Do not upload a
@@ -170,8 +202,8 @@ are charged to an Azure subscription.
 4. If no suitable customer subscription exists, select **Add** on that page or
    use the organization's Microsoft account team/CSP to create one.
 
-The no-CLI installation can continue only after Nous or the deployment operator has published a
-tenant-ready Hermes blueprint using that runtime.
+For a new tenant, `./deploy.sh` performs that Azure preparation and publication. For a prepared
+installation, continue with the tenant-ready blueprint already submitted by the deployment operator.
 
 ## Step 4: find the Hermes blueprint
 
@@ -179,6 +211,12 @@ tenant-ready Hermes blueprint using that runtime.
 2. Look for **Hermes Agent on Foundry** with the status **Pending activate**.
 
 If it is present, select it and continue to Step 5.
+
+After submission, the request can take about **five minutes** to appear; in rare cases it can take
+**a few hours**. These are observed delays, not a Microsoft SLA. Refresh Requests and wait before
+assuming publication failed or uploading another copy. If the operator is running `./setup.sh`,
+it saves progress and pauses here. After approving/activating the request, the operator presses
+**Enter**, or resumes later with `./setup.sh --continue`.
 
 If Nous supplied a tenant-specific package instead:
 
@@ -245,10 +283,45 @@ organization needs centralized approval or naming control.
 
 ## Step 6: connect the Foundry-hosted agent to its Azure Bot
 
-This step is required before anyone creates an instance. Publication can leave a new blueprint set
-to **Notification/API Based** with no Bot ID. That configuration is not correct for this
-Foundry-hosted Hermes deployment and can leave **Create instance** or **Add instance** waiting
-without completing.
+For this Hermes deployment, configure the blueprint's **Bot Based** binding before testing an
+instance. A wrong or missing binding can prevent message delivery. This does not imply that every
+Create/Add instance spinner is caused by the binding, or that API Based is unsupported for all
+Microsoft agents.
+
+**When the deployment operator uses `./setup.sh`:** after you approve/activate the request, they
+press **Enter** at its approval prompt, or run `./setup.sh --continue`. Setup verifies the approved
+state and offers to configure the binding automatically. It creates/reuses a tenant-owned setup
+application with one delegated Graph permission, `AgentCommunicationConfiguration.ReadWrite`,
+consented for that administrator only. This is separate from the Hermes blueprint's runtime
+permissions. The operator opens the printed browser sign-in link on the same computer and completes
+MFA. No device code or manually copied Bot ID is needed. The script reads existing settings,
+preserves notification preferences, updates the Bot Based binding, and reads it back to verify it.
+
+**Runtime activation is a separate step.** After Bot Based routing is verified, setup checks that
+the selected Hermes version is active and receives 100% of traffic. If the hosted endpoint is
+disabled, it asks permission to enable it through Foundry and checks the result. This does not keep
+the container running permanently: an enabled endpoint still scales compute to zero when idle.
+Microsoft 365 blueprint approval does not substitute for this check.
+
+Older setup checkpoints marked complete after routing alone are advanced to this activation and
+first-instance check on `--continue`, without reprovisioning. Once the new acceptance flow has
+completed, a later resume checks endpoint readiness but will not silently reverse an administrator's
+subsequent disable action. See Microsoft's [hosted-agent lifecycle documentation](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/manage-hosted-agent#disable-or-enable-an-agent).
+
+The operator needs permission to register an application/service principal and grant delegated
+consent (the setup calls require `Application.ReadWrite.All` and
+`DelegatedPermissionGrant.ReadWrite.All` in its administrator Graph token). A tenant Global
+Administrator can perform this consent step; Azure subscription ownership alone is not sufficient.
+If those permissions are unavailable, ask the identity administrator to perform setup or use the
+manual fallback below. Do not grant these permissions to agent instances.
+
+The binding API is currently Microsoft Graph **beta**. The setup application has no secret,
+certificate, or application permissions. It and its administrator-specific consent remain in Entra;
+after setup, an administrator can revoke its consent and remove it if no further setup is needed.
+Future resumes then require reviewing/recreating the setup client. Do not delete the Hermes
+blueprint or its Azure Bot when retiring this separate setup application.
+
+**Manual fallback (also usable for a no-CLI installation):**
 
 1. Copy the **Blueprint ID** printed by `./setup.sh`.
 2. Open
@@ -259,9 +332,10 @@ without completing.
 5. Select **Save**.
 6. Reload the page and confirm that it still shows **Bot Based** and the same Bot ID.
 
-The current installer prints the exact URL and value but deliberately does not change this portal
-setting automatically. Automating the Developer Portal-only configuration through a supported,
-tenant-admin API remains a research item.
+Verify a real Teams message after either method. Approval and a successful configuration write do
+not themselves verify runtime enablement, welcome-message delivery, or Microsoft 365 provisioning.
+
+API reference: [Update blueprint communication configuration](https://learn.microsoft.com/en-us/graph/api/agentidentityblueprint-update-communicationconfiguration?view=graph-rest-beta).
 
 ### Consent and approval checklist
 
@@ -271,7 +345,7 @@ tenant-admin API remains a research item.
 | Enable Frontier for pilot users, if required | Global Administrator | [Copilot Frontier settings](https://admin.cloud.microsoft/#/copilot/settings/ViewAll/:/CopilotSettings/Frontier) | Once per audience; change when the pilot group changes |
 | Approve the Hermes blueprint and its Graph scopes | Global Administrator, or AI Administrator where tenant consent policy permits | [Agents > Requests](https://admin.cloud.microsoft/#/agents/all/requested) > Hermes > **Accept permissions** | Once for the tenant-specific blueprint permission set; repeat when a later version requests new scopes |
 | Choose the Hermes policy template and hiring scope | Global Administrator or AI Administrator | The same Hermes publication wizard | Once at publication; administrators can change policy and scope later |
-| Set Agent Type to Bot Based and set Bot ID | Blueprint owner or tenant administrator | Teams Developer Portal blueprint configuration | Once per blueprint |
+| Set Agent Type to Bot Based and set Bot ID | Deployment/identity administrator | `./setup.sh` after approval, or the Teams Developer Portal fallback | Once per blueprint; setup reads back the saved configuration |
 | Give Hermes access to a document, site, mailbox, team, or other resource | Resource owner or Microsoft 365 administrator | The normal SharePoint, OneDrive, Exchange, or Teams sharing UI | Per resource, group, or policy |
 
 Azure role assignments used by the hosted runtime and routines are RBAC, not Microsoft Graph
@@ -366,8 +440,8 @@ automation hooks; they are not a universal hard per-agent spending cap. The curr
 also exposes an approved model list and priority order, documented in the repository README.
 
 Routine authorization requires one tenant-level automation deployment because every new Agent
-Identity needs an Azure role on the Foundry project. It is intentionally kept out of this no-CLI
-guide. The deployment operator installs it once by following the routine section in
+Identity needs an Azure role on the Foundry project. `./deploy.sh` installs it by default. For a
+prepared portal-only installation, the deployment operator installs it once using
 [ADVANCED_TENANT_DEPLOYMENT.md](ADVANCED_TENANT_DEPLOYMENT.md); tenant admins should not assign
 roles manually to individual agents.
 
@@ -379,7 +453,8 @@ roles manually to individual agents.
 | Microsoft Foundry | Runs the hosted Hermes container, model endpoints, agent endpoint, sessions, and scale-to-zero infrastructure |
 | Microsoft Agent 365 and Microsoft 365 | Handles publication governance and the managed Agent Identity, Agent User, license, Teams, and Microsoft 365 workload provisioning |
 | Hermes runtime | Provides the agent behavior, tools, model selection, memory, file handling, and routine logic within the permissions granted to that instance |
-| Nous/deployment operator | Prepares the target-tenant runtime and blueprint, publishes the package, and installs advanced Azure-side automation and observability |
+| Nous | Supplies the code/package, pinned base image and deployment instructions |
+| Customer deployment operator | Runs the guided installer in the customer's tenant; reviews Azure-side automation and configuration |
 
 ## Current packaging boundary
 
@@ -387,8 +462,8 @@ The intended enterprise experience is a Microsoft-distributed Hermes offer that 
 and publishes a tenant-ready blueprint before the administrator reaches this guide. The present POC
 does not yet provide one portable ZIP that creates the Azure runtime, Entra blueprint, Microsoft 365
 publication, and instance workloads in any tenant. Today, Nous or the customer's deployment operator
-must perform that one-time preparation in each target tenant. After it is prepared, the approval and
-instance-provisioning steps above are portal-only and require no CLI work.
+must perform that one-time preparation in each target tenant. `./deploy.sh` is the guided path for
+that preparation; it includes the subsequent portal approval, activation and acceptance checkpoints.
 
 For that one-time technical preparation, use
 [ADVANCED_TENANT_DEPLOYMENT.md](ADVANCED_TENANT_DEPLOYMENT.md). For updating an already deployed

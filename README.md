@@ -18,8 +18,11 @@ There are three different deployment tasks:
    portal-only [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md). It covers licensing,
    blueprint approval, consent, hiring scope, instance creation, and validation. It requires no CLI.
 2. **Preparing Hermes in a new tenant.** An authorized tenant deployment operator runs
-   `./setup.sh`. It installs missing Azure command-line tools, lets the operator choose an available
-   tenant identity, and runs the packaged `azd provision` flow. See
+   `./deploy.sh` (an alias for `./setup.sh`). It installs missing Azure command-line tools, lets the
+   operator choose an available tenant identity, guides prerequisite checks, and runs the packaged
+   `azd provision` flow. It pauses for Microsoft 365 approval, configures Bot Based routing after
+   admin sign-in, enables and verifies the hosted endpoint with admin confirmation, then guides
+   instance creation and first-use tests. Resume with `./deploy.sh --continue`. See
    [ADVANCED_TENANT_DEPLOYMENT.md](ADVANCED_TENANT_DEPLOYMENT.md) for its exact operations and
    permission requirements.
 3. **Building or updating Hermes after that installation exists.** This repository can build the
@@ -45,11 +48,12 @@ layers this repository's components on top. There is therefore no Hermes source 
 separate Hermes download script here. See [Dockerfile](Dockerfile) for the exact pinned digest and
 [DEPLOYMENT.md §10](DEPLOYMENT.md#10-build-and-publish-the-hermes-container) for the build flow.
 
-The application build does not reach into another local repository. Azure resource creation is
-currently a documented administrator-led portal procedure rather than one-click infrastructure as
-code. Once the Foundry project, models, and registry exist, this repository can build the image,
-create a new hosted agent and its Foundry-managed blueprint, and generate a tenant-specific ZIP for
-manual Microsoft 365 admin-center upload.
+The application build does not reach into another local repository. The guided installer uses the
+packaged Bicep templates to create the Azure resources and builds the image in ACR. It publishes a
+private tenant blueprint through Foundry; a cross-tenant ZIP is not used. Licensing/enrollment,
+Microsoft 365 approval and managed instance creation remain explicit portal steps. Setup records
+API readiness checks separately from operator-confirmed Teams/OneDrive/mail tests. A fresh-tenant
+end-to-end acceptance run is still required; mocked installer tests are not evidence of that run.
 
 ## Architecture
 
@@ -139,8 +143,35 @@ administrator identities already available on the machine, offers **Login into o
 then runs `azd provision`. That command creates the tenant's Azure/Foundry resources, builds Hermes
 in the tenant's registry, creates the Foundry-managed blueprint, declares the permissions that the
 administrator will review, installs the scoped routine-role automation, and submits a private
-tenant publication request. It does not approve the request, grant Microsoft 365 consent, assign a
-license, create an Agent User, or publish to a public marketplace.
+tenant publication request. It does not approve the request, grant the blueprint's Microsoft 365
+runtime consent, assign a license, create an Agent User, or publish to a public marketplace.
+
+Setup then pauses at **Requests** and prints the exact admin-center URL. The request can take about
+five minutes to appear, and in rare cases a few hours (observed delays, not a Microsoft SLA).
+Approve/activate it, return to the terminal, and press **Enter**. Setup checks the approval status
+and configures **Bot Based + Bot ID** through Microsoft Graph, preserving existing notification
+settings and verifying the result with a separate read.
+
+If interrupted or waiting for approval, resume in the same checkout:
+
+```bash
+./setup.sh --continue
+```
+
+Completed provisioning is not repeated. A failure *during* provisioning retries that phase using
+the existing idempotent deployment hooks. Checkpoints live in Git-ignored
+`deployment-output/setup-state.json` and contain IDs/status, not tokens. Keep that directory and
+the `.azure` environment to resume; don't copy checkpoints between tenants. Only one setup process
+can run in a checkout at a time. Use separate checkouts for separate installations.
+
+The routing step explicitly asks permission to create/reuse a tenant-owned setup app with delegated
+`AgentCommunicationConfiguration.ReadWrite`, consented for the administrator only. It then prints
+a browser sign-in link: use the same administrator and complete MFA. It does not open your browser,
+use device codes, save tokens, create client secrets, or assign roles to agent instances. The setup
+app/consent remain in Entra for future setup; administrators can revoke/remove them after setup.
+This Graph API is **beta**, and this step does not replace licensing, activation, or a real Teams
+delivery test. See [the admin guide](TENANT_ADMIN_INSTALLATION.md#step-6-connect-the-foundry-hosted-agent-to-its-azure-bot)
+for the manual fallback.
 
 Before provisioning, the same operator can run `./setup.sh --validate`. It performs the normal
 tenant/account sign-in and then checks the selected tenant, subscription, Azure and Foundry token

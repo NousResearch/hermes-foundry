@@ -22,6 +22,78 @@ For a new customer tenant, run the repository's tenant-neutral installer:
 ./setup.sh
 ```
 
+`./deploy.sh` is an equivalent entry point, not a separate deployment implementation. Before Azure
+provisioning, the script displays the license/enrollment, employee Teams, Azure IAM and model-quota
+prerequisites with portal links and requires explicit confirmation. These are operator checks, not
+an automated proof of Microsoft 365 eligibility or regional capacity.
+
+After publication, setup pauses at Microsoft 365 **Requests**. Allow about five minutes for the
+request to appear; rare delays can last a few hours. These are observed delays, not a guaranteed
+service interval. Approve/activate the request at
+`https://admin.cloud.microsoft/#/agents/all/requested`, then press **Enter** in setup.
+
+To resume after closing the terminal, pending approval, or a failed step:
+
+```bash
+./setup.sh --continue
+```
+
+The saved tenant, subscription, environment, and deployment IDs are checked before continuing.
+Completed provisioning is skipped; an interrupted provisioning phase retries the existing
+deployment hooks. An existing-agent identity mismatch is not treated as a completed installation.
+The checkpoint and local MSAL environment are private, Git-ignored files under `deployment-output`.
+Do not delete the checkpoint to recover from an ambiguous app-creation result: inspect Entra first
+to avoid duplicate objects. Only one setup process may run in this checkout at a time.
+
+After Microsoft reports approval, setup requests a separate, administrator-specific delegated
+consent for `AgentCommunicationConfiguration.ReadWrite` on a tenant-owned public-client setup app.
+Creating that app and consent needs the administrator Graph permissions
+`Application.ReadWrite.All` and `DelegatedPermissionGrant.ReadWrite.All`; Azure roles alone do not
+provide them. Setup resolves the permission ID from Graph, rather than using tenant-specific IDs.
+The local authentication dependency is MSAL 1.36.0, installed into a private virtual environment
+if MSAL is not already available. On Debian/Ubuntu, Python's `venv` support must be installed.
+
+Open the printed localhost link in your preferred browser on the setup computer, sign in as the
+same administrator, and complete MFA. This uses authorization code + PKCE, not device-code login.
+The script does not disable Security Defaults, persist tokens, or create client credentials.
+This is the same authentication and Graph configuration path verified manually against a deployed
+blueprint. Azure CLI authentication is used to prepare the setup app and its consent, not to request
+the new communication scope through Microsoft's first-party CLI application. The separate browser
+sign-in must return the same tenant and administrator identity before any binding is written.
+It performs GET / PUT / GET on
+`/beta/applications/{blueprintId}/microsoft.graph.agentIdentityBlueprint/communicationConfiguration`,
+preserving other communication settings. Unknown fields or a readback mismatch stop setup.
+Before authentication, setup also verifies the Azure Bot's tenant, application ID, and exact hosted-agent
+Activity Protocol endpoint. Failed, expired, or wrong-account sign-ins retain the configuration phase;
+rerun `./setup.sh --continue` for a fresh browser link, without rebuilding or republishing.
+Microsoft documents this API as **beta**, not production-supported GA. Tenant-owned setup app
+registration and consent can be removed after setup, but are not automatically deleted by it.
+
+Automated tests exercise the local browser callback, sign-in failures, wrong identities, approval
+gating, resume behavior, and configuration readback using mocked Microsoft services. They do not
+replace a clean-tenant installation and Teams delivery acceptance test.
+
+Setup then validates the active serving version and calls
+`POST {projectEndpoint}/agents/{agentName}:enable?api-version=v1` if the endpoint is disabled and
+the administrator confirms activation. It reads back enabled state with bounded polling; failed or
+ambiguous writes retain the phase and are not blindly retried. A resumed run reads state first.
+It never changes another blueprint or route to make this check pass. Disabled is an endpoint lifecycle
+state, not scale-to-zero. See [Microsoft's lifecycle API](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/manage-hosted-agent#disable-or-enable-an-agent).
+
+Finally the installer guides Microsoft-managed instance creation, asks for the instance's email,
+and verifies its enabled Agent User/Agent Identity belong to this blueprint through read-only Graph
+beta queries. The administrator must be able to read these directory objects. A propagation delay
+or denied read stops this check; it does not trigger new identity creation or role assignments.
+It then guides owner-run Teams, OneDrive, email and routine tests. Individual successful operator
+checks are checkpointed. `complete` now
+requires that guided acceptance, not only Bot Based routing. Old routing-only checkpoints resume at
+runtime activation; an already accepted deployment is checked read-only and never silently enabled
+after a subsequent admin disable. No automatic workload creation or test email is sent by setup.
+This expanded path is covered by mocked tests; a new-tenant deployment and delivery test remain
+required to validate the complete customer journey. See
+[Step 6 of the admin guide](TENANT_ADMIN_INSTALLATION.md#step-6-connect-the-foundry-hosted-agent-to-its-azure-bot)
+for the manual fallback.
+
 For a read-only prerequisite check before deployment, run:
 
 ```bash

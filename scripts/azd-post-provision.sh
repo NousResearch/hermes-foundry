@@ -17,13 +17,6 @@ done
 export ACCOUNT PROJECT AGENT REG TAG PRIMARY_MODEL FALLBACK_MODEL BLUEPRINT_ID MAIB_NAME
 az account set --subscription "$SUBSCRIPTION_ID"
 
-printf '\nBuilding the Hermes image in Azure Container Registry...\n'
-az acr build \
-  --registry "$REG" \
-  --image "hermes-full-foundry:${TAG}" \
-  --file Dockerfile \
-  .
-
 base="https://${ACCOUNT}.services.ai.azure.com/api/projects/${PROJECT}"
 resource="https://ai.azure.com"
 output_dir="deployment-output/${AGENT}"
@@ -48,26 +41,52 @@ agent_lookup="${output_dir}/existing-agent.json"
 if python3 ./scripts/foundry_agent_lookup.py \
   --url "${base}/agents/${AGENT}?api-version=v1" \
   --output "$agent_lookup"; then
-  printf '\nThe hosted agent already exists; preserving it and resuming publication.\n'
   LIVE_BLUEPRINT_ID=$(python3 - "$agent_lookup" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1]))
 print((data.get("blueprint") or {}).get("client_id") or "")
 PY
   )
-  [[ "$LIVE_BLUEPRINT_ID" =~ ^[0-9A-Fa-f-]{36}$ ]] || {
+  [[ "$LIVE_BLUEPRINT_ID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || {
     printf 'ERROR: existing hosted agent has no usable blueprint client ID.\n' >&2
     exit 1
   }
   live_blueprint_lower=$(printf '%s' "$LIVE_BLUEPRINT_ID" | tr '[:upper:]' '[:lower:]')
   expected_blueprint_lower=$(printf '%s' "${BLUEPRINT_ID}" | tr '[:upper:]' '[:lower:]')
-  [[ "$live_blueprint_lower" == "$expected_blueprint_lower" ]] || {
-    printf 'ERROR: existing hosted agent is bound to a different identity blueprint.\n' >&2
-    exit 1
-  }
+  if [[ "$live_blueprint_lower" != "$expected_blueprint_lower" ]]; then
+    # A known existing deployment is not a lookup failure. Leave it intact, but never adopt its
+    # identity silently: the Azure template's bot/automation may refer to the planned blueprint.
+    # Exit before building, publishing, configuring permissions, or installing role automation.
+    cat <<EOF
+
+Existing Hermes deployment found. Remaining setup skipped.
+
+Hosted agent: ${AGENT}
+Existing identity blueprint: ${LIVE_BLUEPRINT_ID}
+Identity blueprint planned by this environment: ${BLUEPRINT_ID}
+
+This hosted agent already uses a different identity blueprint. It has not been replaced or updated.
+Image build, publication, permission changes, and routine automation were skipped by this hook.
+
+You can find the existing blueprint at https://admin.cloud.microsoft/#/agents/all.
+For an image update, use the existing-deployment update steps in README.md, not a new installation.
+Review the selected Azure environment before attempting a separate installation.
+
+Azure infrastructure provisioning ran before this check. Its changes have not been rolled back;
+this message does not mean a new installation completed or that every feature is ready to use.
+EOF
+    exit 0
+  fi
+  printf '\nThe hosted agent already exists with the expected identity; preserving it and resuming publication.\n'
 else
   lookup_status=$?
   if [[ "$lookup_status" -eq 4 ]]; then
+    printf '\nBuilding the Hermes image in Azure Container Registry...\n'
+    az acr build \
+      --registry "$REG" \
+      --image "hermes-full-foundry:${TAG}" \
+      --file Dockerfile \
+      .
     printf '\nCreating the Hermes hosted agent bound to its explicit managed identity blueprint...\n'
     ./scripts/create-hosted-blueprint.sh
   else
@@ -108,6 +127,11 @@ Developer provisioning is complete. Finish these required tenant-administrator s
    Select "Hermes Agent on Foundry" and click Enable. Confirm that its status is Available.
 
 3. CONNECT THE FOUNDRY BOT
+   When using ./setup.sh, return to its approval prompt and press Enter after approval.
+   Setup verifies approval and configures Bot Based routing through Microsoft Graph (beta).
+   If you stopped setup, run ./setup.sh --continue; completed provisioning is not repeated.
+
+   Manual fallback when running azd directly or when automatic configuration is unavailable:
    Open: https://dev.teams.microsoft.com/tools/agent-blueprint/${BLUEPRINT_ID}/configuration
    Change Agent Type from Notification/API Based to Bot Based.
    Enter this Bot ID: ${BLUEPRINT_ID}
