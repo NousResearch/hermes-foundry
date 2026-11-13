@@ -476,7 +476,9 @@ continues with [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md).
 Use a ZIP only when the Foundry-native publication request cannot be used or the onboarding test is
 specifically intended to exercise manual package upload.
 
-Prepare a 192×192 color PNG and a 32×32 transparent white-outline PNG. Then run:
+Nous girl icons are included in `deployment/agent365/`: a 192×192 color PNG and a
+32×32 transparent white-outline PNG. Use these or supply your own icons with the same
+dimensions. Then run:
 
 ```bash
 python3 scripts/package-agent365-blueprint.py \
