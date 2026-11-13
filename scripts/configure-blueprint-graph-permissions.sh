@@ -108,11 +108,12 @@ else
   exit 1
 fi
 
+verify_configuration() {
 # Verify the two configuration layers without creating an OAuth2 permission grant.
 curl --fail-with-body --silent --show-error "$BLUEPRINT_URI?\$select=requiredResourceAccess" \
-  -H "$AUTH" -H "Accept: application/json" > "$WORK/verify-blueprint.json"
+  -H "$AUTH" -H "Accept: application/json" > "$WORK/verify-blueprint.json" || return 2
 curl --fail-with-body --silent --show-error "$INHERITANCE_URI" \
-  -H "$AUTH" -H "Accept: application/json" > "$WORK/verify-inheritance.json"
+  -H "$AUTH" -H "Accept: application/json" > "$WORK/verify-inheritance.json" || return 2
 python3 - "$WORK/verify-blueprint.json" "$WORK/graph-sp.json" "$WORK/verify-inheritance.json" \
   "${SCOPES[@]}" <<'PY'
 import json, sys
@@ -129,3 +130,12 @@ print("Blueprint Graph declaration and enumerated inheritance verified:")
 for scope in sorted(wanted): print("  " + scope)
 print("Admin consent has NOT been granted by this command.")
 PY
+
+}
+for attempt in $(seq 1 12); do
+  if verify_configuration; then exit 0; else verify_status=$?; fi
+  [[ "$verify_status" -eq 1 ]] || exit "$verify_status"
+  [[ "$attempt" -lt 12 ]] || { echo 'ERROR: Graph permissions did not converge within one minute; resume setup to recheck.' >&2; exit 1; }
+  echo 'Waiting for Graph permission readback to converge...'
+  sleep 5
+done

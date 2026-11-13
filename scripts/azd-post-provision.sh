@@ -75,9 +75,19 @@ Review the selected Azure environment before attempting a separate installation.
 Azure infrastructure provisioning ran before this check. Its changes have not been rolled back;
 this message does not mean a new installation completed or that every feature is ready to use.
 EOF
+    if [[ "${HERMES_FORCE_REDEPLOY:-false}" == "true" ]]; then
+      printf 'ERROR: agent identity differs from the provisioning result. No application changes were made; rerun ./setup.sh --continue with the updated identity-preserving template.\n' >&2
+      exit 1
+    fi
     exit 0
   fi
-  printf '\nThe hosted agent already exists with the expected identity; preserving it and resuming publication.\n'
+  if [[ "${HERMES_FORCE_REDEPLOY:-false}" == "true" ]]; then
+    printf '\nForce reinstall: rebuilding current source and replacing the serving application version.\n'
+    python3 scripts/reinstall_agent.py
+
+  else
+    printf '\nThe hosted agent already exists with the expected identity; preserving it and resuming publication.\n'
+  fi
 else
   lookup_status=$?
   if [[ "$lookup_status" -eq 4 ]]; then
@@ -91,8 +101,13 @@ else
   fi
 fi
 
+if [[ -n "${HERMES_DEPLOY_RUN_ID:-}" ]]; then
+  [[ "$HERMES_DEPLOY_RUN_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || { echo 'ERROR: invalid deployment run ID' >&2; exit 1; }
+  export HERMES_PUBLICATION_CHECKPOINT_DIR="deployment-output/publications/${HERMES_DEPLOY_RUN_ID}"
+fi
+
 printf '\nSubmitting Hermes Agent on Foundry for private tenant review...\n'
-DISPLAY_NAME="Hermes Agent on Foundry" ./scripts/publish-autopilot-blueprint.sh
+HERMES_DEPLOY_SKIP_LOCAL_CONFIG=true DISPLAY_NAME="Hermes Agent on Foundry" ./scripts/publish-autopilot-blueprint.sh
 
 # Foundry publication has reset blueprint permission declarations in previous hfull deployments.
 # Reconcile only after publishing so the tenant administrator reviews the final permission set.
@@ -112,33 +127,12 @@ fi
 
 cat <<EOF
 
-Developer provisioning is complete. Finish these required tenant-administrator steps in order:
+AZURE PROVISIONING PHASE FINISHED.
+This is not the final setup result. Publication, Teams connection, and runtime checks follow.
 
-1. APPROVE THE BLUEPRINT
-   Open: https://admin.cloud.microsoft/#/agents/all/requested
-   Select "Hermes Agent on Foundry", review its permissions and hiring scope, and click Approve.
+Setup will now check the existing installation and show only the actions still required.
+If the command exits, use the final setup status/error below to determine what remains.
+For a paused installation, resume from this repository folder with ./setup.sh --continue.
+For azd-only deployments, follow TENANT_ADMIN_INSTALLATION.md to finish installation.
 
-2. ENABLE THE BLUEPRINT
-   Open: https://admin.cloud.microsoft/#/agents/all
-   Select "Hermes Agent on Foundry" and click Enable. Confirm that its status is Available.
-
-3. CONNECT THE FOUNDRY BOT
-   When using ./setup.sh, return to its approval prompt and press Enter after approval.
-   Setup verifies approval and configures Bot Based routing through Microsoft Graph (beta).
-   If you stopped setup, run ./setup.sh --continue; completed provisioning is not repeated.
-
-   Manual fallback when running azd directly or when automatic configuration is unavailable:
-   Open: https://dev.teams.microsoft.com/tools/agent-blueprint/${BLUEPRINT_ID}/configuration
-   Change Agent Type from Notification/API Based to Bot Based.
-   Enter this Bot ID: ${BLUEPRINT_ID}
-   Click Save and confirm that the saved page still shows Bot Based and the same Bot ID.
-
-Do not create an instance until all three steps are complete. A blank Bot ID or Notification/API
-Based configuration can leave Create/Add instance waiting without completing.
-
-Nothing was submitted to Marketplace, AppSource, or the public Teams Store. Microsoft owns the
-managed Create instance flow and provisions each licensed Agent Identity and Agent User. The
-installed tenant automation grants only the Foundry User role, at this Hermes project, to new child
-Agent Identities from this blueprint so they can manage their own Foundry routines after
-provisioning. Non-turn Agent OBO credentials are a separate optional routine-execution setup.
 EOF

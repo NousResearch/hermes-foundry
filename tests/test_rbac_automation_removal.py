@@ -62,6 +62,7 @@ class RbacAutomationRemovalTests(unittest.TestCase):
                     else
                       exit 3
                     fi ;;
+                  resource\\ list*) printf '[{"name":"hermes-agent-foundry-role-sync"}]' ;;
                   role\\ assignment\\ list*) cat "$FIXTURE_DIR/assignments.json" ;;
                   role\\ assignment\\ delete*) exit 0 ;;
                   resource\\ delete*Microsoft.Logic*) printf absent > "$STATE_FILE" ;;
@@ -106,7 +107,7 @@ class RbacAutomationRemovalTests(unittest.TestCase):
     def test_mismatched_blueprint_aborts_before_mutation(self):
         result, calls, state = self.run_removal(
             installed_blueprint="11111111-1111-1111-1111-111111111111",
-            extra=("--execute", "--confirm-workflow-name", WORKFLOW),
+            extra=("--workflow-name", WORKFLOW, "--execute", "--confirm-workflow-name", WORKFLOW),
         )
 
         self.assertNotEqual(0, result.returncode)

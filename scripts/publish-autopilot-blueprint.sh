@@ -8,7 +8,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-[ ! -f .deployment.local ] || source ./.deployment.local
+if [[ "${HERMES_DEPLOY_SKIP_LOCAL_CONFIG:-false}" != "true" && -f .deployment.local ]]; then
+  source ./.deployment.local
+fi
 
 usage() {
   cat <<'EOF'
@@ -22,6 +24,8 @@ Required environment:
 Optional:
   DISPLAY_NAME  Microsoft 365 display name; default "Hermes Agent on Foundry"
   APP_VERSION   Publication version; default "1.0.0"
+  COLOR_ICON    192x192 PNG; default deployment/agent365/color.png
+  OUTLINE_ICON  32x32 PNG; default deployment/agent365/outline.png
 
 This command submits a tenant-scoped Autopilot publication request for administrator review. It
 performs no tenant-administrator approval or instance-provisioning action.
@@ -97,11 +101,19 @@ if not any(x.get("traffic_percentage") == 100 for x in rules):
     raise SystemExit("ERROR: hosted agent has no 100% serving version")
 PY
 
-python3 - "$DISPLAY_NAME" "$APP_VERSION" "$BLUEPRINT_ID" > "$WORK/request.json" <<'PY'
-import json, sys
-display, version, blueprint = sys.argv[1:]
+python3 - "$DISPLAY_NAME" "$APP_VERSION" "$BLUEPRINT_ID" "${COLOR_ICON:-deployment/agent365/color.png}" "${OUTLINE_ICON:-deployment/agent365/outline.png}" > "$WORK/request.json" <<'PY'
+import base64, json, struct, sys
+from pathlib import Path
+display, version, blueprint, color, outline = sys.argv[1:]
+def icon(path, size):
+    data = Path(path).read_bytes()
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n" or struct.unpack(">II", data[16:24]) != (size, size):
+        raise SystemExit(f"ERROR: expected {size}x{size} PNG icon: {path}")
+    return base64.b64encode(data).decode("ascii")
 json.dump({
     "agentDisplayName": display,
+    "colorIconBase64": icon(color, 192),
+    "outlineIconBase64": icon(outline, 32),
     "publishAsAutopilot": True,
     "publishScope": "Tenant",
     "appVersion": version,
@@ -139,6 +151,12 @@ if $DRY_RUN; then
 fi
 
 TOKEN=$(az account get-access-token --resource "$RESOURCE" --query accessToken -o tsv)
+PUBLICATION_ACTION=$(python3 scripts/publication_checkpoint.py begin "$BASE" "$AGENT" "$BLUEPRINT_ID" "$APP_VERSION")
+if [[ "$PUBLICATION_ACTION" == "complete" ]]; then
+  echo "Publication already completed for this version; resuming remaining setup."
+  exit 0
+fi
+
 set +e
 HTTP_STATUS=$(curl --silent --show-error \
   --connect-timeout 15 \
@@ -176,8 +194,12 @@ message = str((error or {}).get("message") or "") if isinstance(error, dict) els
 raise SystemExit(0 if code == "UserError" and "version already exists" in message.lower() else 1)
 PY
   then
+    python3 scripts/publication_checkpoint.py complete "$BASE" "$AGENT" "$BLUEPRINT_ID" "$APP_VERSION" >/dev/null
     echo "Publication version ${APP_VERSION} already exists; the existing request was left unchanged."
     exit 0
+  fi
+  if [[ "$HTTP_STATUS" == 4* && "$HTTP_STATUS" != 408 ]]; then
+    python3 scripts/publication_checkpoint.py rejected "$BASE" "$AGENT" "$BLUEPRINT_ID" "$APP_VERSION" >/dev/null
   fi
   echo "ERROR: Foundry publication returned HTTP ${HTTP_STATUS}." >&2
   echo "The response body was withheld because it can contain tenant and request identifiers." >&2
@@ -193,3 +215,5 @@ for key in ("status", "state"):
     if j.get(key) is not None:
         print(f"Foundry {key}: {j[key]}")
 PY
+
+python3 scripts/publication_checkpoint.py complete "$BASE" "$AGENT" "$BLUEPRINT_ID" "$APP_VERSION" >/dev/null

@@ -65,7 +65,7 @@ read_agent() {
 }
 
 read_agent > "$WORK/agent-before.json"
-python3 - "$WORK/agent-before.json" "$EXPECTED_CURRENT" "$WORK/blueprint.txt" <<'PY'
+python3 - "$WORK/agent-before.json" "$EXPECTED_CURRENT" "$WORK/blueprint.txt" "$TARGET_VERSION" <<'PY'
 import json, re, sys
 
 agent = json.load(open(sys.argv[1]))
@@ -76,7 +76,7 @@ serving = [item for item in rules if item.get("traffic_percentage") == 100]
 if len(serving) != 1:
     raise SystemExit("ABORT: agent does not have exactly one 100% serving version")
 current = str(serving[0].get("agent_version") or "")
-if current != sys.argv[2]:
+if current not in {sys.argv[2], sys.argv[4]}:
     raise SystemExit(
         f"ABORT: expected serving version {sys.argv[2]}, but Foundry currently serves {current}. "
         "Refresh state before routing; another release may have completed."
@@ -89,9 +89,9 @@ print(f"PASS: serving version still matches the expected version ({current}).")
 PY
 
 BLUEPRINT_ID=$(cat "$WORK/blueprint.txt")
-az rest --method GET --resource "$RESOURCE" \
+python3 scripts/wait_foundry_state.py \
   --url "${BASE}/agents/${AGENT}/versions/${TARGET_VERSION}?api-version=v1" \
-  --output json > "$WORK/target.json"
+  --output "$WORK/target.json"
 
 python3 - "$WORK/target.json" "$BLUEPRINT_ID" <<'PY'
 import json, sys
@@ -147,6 +147,26 @@ if missing:
 print(f"PASS: blueprint still declares all {len(required)} required Graph scopes.")
 PY
 
+# Recheck after readiness/permission waits; another operator may have routed meanwhile.
+read_agent > "$WORK/agent-latest.json"
+CURRENT=$(python3 - "$WORK/agent-latest.json" "$EXPECTED_CURRENT" "$TARGET_VERSION" "$BLUEPRINT_ID" <<'PYGUARD'
+import json, sys
+sys.path.insert(0, 'scripts')
+from wait_foundry_state import serving
+agent = json.load(open(sys.argv[1]))
+current = serving(agent)
+if current not in {sys.argv[2], sys.argv[3]}:
+    raise SystemExit('ABORT: serving version changed while waiting; no route was overwritten')
+if str((agent.get('blueprint') or {}).get('client_id', '')).lower() != sys.argv[4].lower():
+    raise SystemExit('ABORT: blueprint changed while waiting')
+print(current)
+PYGUARD
+)
+if [[ "$CURRENT" == "$TARGET_VERSION" ]]; then
+  printf 'PASS: target version %s is already serving and validated; no PATCH needed.\n' "$TARGET_VERSION"
+  exit 0
+fi
+
 BODY=$(python3 - "$TARGET_VERSION" <<'PY'
 import json, sys
 print(json.dumps({"agent_endpoint": {"version_selector": {"version_selection_rules": [{
@@ -165,7 +185,9 @@ set -e
 
 # A failed or interrupted PATCH has an uncertain outcome. Always read the route back instead of
 # telling the operator to blindly replay it.
-read_agent > "$WORK/agent-after.json"
+python3 scripts/wait_foundry_state.py \
+  --url "${BASE}/agents/${AGENT}?api-version=v1" --mode route \
+  --target "$TARGET_VERSION" --expected "$EXPECTED_CURRENT" --output "$WORK/agent-after.json"
 python3 - "$WORK/agent-after.json" "$TARGET_VERSION" "$PATCH_STATUS" <<'PY'
 import json, sys
 

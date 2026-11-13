@@ -39,7 +39,7 @@ class ModelSelectionTests(unittest.TestCase):
     def test_command_choices_are_checked_against_inventory(self):
         self.assertIn('text.StartsWith("/model "', self.policy)
         self.assertIn("inventory.Models.FirstOrDefault", self.policy)
-        self.assertIn("SetPreferenceAsync(sessionKey, requested", self.policy)
+        self.assertIn("SetPreferenceAsync(preferenceKey, requested", self.policy)
         self.assertIn('argument.Equals("auto"', self.policy)
 
     def test_teams_command_is_handled_before_hermes_turn(self):
@@ -50,9 +50,9 @@ class ModelSelectionTests(unittest.TestCase):
 
     def test_turn_and_routine_send_explicit_provider_and_model(self):
         self.assertIn("model = modelSelection?.Model", self.router)
-        self.assertIn('provider = modelSelection is null ? null : "azure-foundry"', self.router)
+        self.assertIn('provider = modelSelection?.Provider', self.router)
         self.assertIn("model = modelSelection.Model", self.routines)
-        self.assertIn('provider = "azure-foundry"', self.routines)
+        self.assertIn('provider = modelSelection.Provider', self.routines)
 
     def test_release_captures_inventory_and_priority(self):
         release = (self.root / "new-version.sh").read_text()

@@ -24,7 +24,7 @@ WORKFLOW_ID = (
 
 class RbacAutomationInstallTests(unittest.TestCase):
     def run_installer(
-        self, *, list_failure=False, provider_failure=False, installed_blueprint=BLUEPRINT
+        self, *, list_failure=False, provider_failure=False, installed_blueprint=BLUEPRINT, explicit=False, empty=False
     ):
         workflow = {
             "id": WORKFLOW_ID,
@@ -40,7 +40,7 @@ class RbacAutomationInstallTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             temp = pathlib.Path(directory)
             calls = temp / "calls.log"
-            (temp / "workflows.json").write_text(json.dumps([{"id": WORKFLOW_ID, "name": WORKFLOW}]))
+            (temp / "workflows.json").write_text(json.dumps([] if empty else [{"id": WORKFLOW_ID, "name": WORKFLOW}]))
             (temp / "workflow.json").write_text(json.dumps(workflow))
             fake_az = temp / "az"
             fake_az.write_text(textwrap.dedent("""\
@@ -78,6 +78,8 @@ class RbacAutomationInstallTests(unittest.TestCase):
                 "--blueprint-client-id", BLUEPRINT,
                 "--location", "eastus2",
             ]
+            if explicit:
+                command += ["--workflow-name", WORKFLOW]
             result = subprocess.run(
                 command, text=True, capture_output=True, env=environment, check=False
             )
@@ -100,12 +102,23 @@ class RbacAutomationInstallTests(unittest.TestCase):
 
     def test_existing_workflow_for_other_blueprint_stops_before_deployment(self):
         result, calls = self.run_installer(
-            installed_blueprint="11111111-1111-1111-1111-111111111111"
+            installed_blueprint="11111111-1111-1111-1111-111111111111", explicit=True
         )
 
         self.assertNotEqual(0, result.returncode)
         self.assertIn("different Agent Identity Blueprint", result.stderr)
         self.assertNotIn("deployment group create", calls)
+
+    def test_default_collision_uses_scoped_workflow(self):
+        result, calls = self.run_installer(installed_blueprint="11111111-1111-1111-1111-111111111111")
+        self.assertIn("using a separate scoped workflow", result.stderr)
+        self.assertIn("deployment group create", calls)
+        self.assertIn("workflowName=" + WORKFLOW + "-", calls)
+
+    def test_fresh_tenant_uses_scoped_workflow(self):
+        result, calls = self.run_installer(empty=True)
+        self.assertIn("deployment group create", calls)
+        self.assertIn("workflowName=" + WORKFLOW + "-", calls)
 
     def test_matching_workflow_preserves_original_cutoff_on_redeployment(self):
         result, calls = self.run_installer()

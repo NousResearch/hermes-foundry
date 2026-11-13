@@ -95,6 +95,57 @@ public sealed class ModelPolicyServiceTests : IDisposable
         Assert.True(selection.IsExplicit);
     }
 
+    [Fact]
+    public async Task NousDefaultDoesNotRequireFoundryDiscoveryAndPreservesProviderPreferences()
+    {
+        var handler = new RecordingHandler(RecordingHandler.Json("""
+            {"value":[{"type":"ModelDeployment","name":"best","capabilities":{"responses":true}}]}
+            """));
+        var service = CreateService(handler, new Dictionary<string, string?>
+        {
+            ["INFERENCE_PROVIDER"] = "nous",
+            ["INFERENCE_ALLOWED_PROVIDERS"] = "nous,azure-foundry",
+            ["NOUS_MODEL"] = "NousResearch/Hermes-test",
+            ["NOUS_MODELS"] = "NousResearch/Hermes-small",
+        });
+        var initial = await service.ResolveAsync("session-a", CancellationToken.None);
+        Assert.Equal("nous", initial.Provider);
+        Assert.Equal("NousResearch/Hermes-test", initial.Model);
+        Assert.Empty(handler.Requests);
+        await service.HandleCommandAsync("/model NousResearch/Hermes-small", "session-a", CancellationToken.None);
+        await service.HandleCommandAsync("/provider azure-foundry", "session-a", CancellationToken.None);
+        var azure = await service.ResolveAsync("session-a", CancellationToken.None);
+        Assert.Equal("azure-foundry", azure.Provider);
+        Assert.Equal("best", azure.Model);
+        await service.HandleCommandAsync("/provider nous", "session-a", CancellationToken.None);
+        Assert.Equal("NousResearch/Hermes-small", (await service.ResolveAsync("session-a", CancellationToken.None)).Model);
+        Assert.Equal("NousResearch/Hermes-test", (await service.ResolveAsync("session-b", CancellationToken.None)).Model);
+        await service.HandleCommandAsync("/provider default", "session-a", CancellationToken.None);
+        Assert.Equal("nous", (await service.ResolveAsync("session-a", CancellationToken.None)).Provider);
+    }
+
+    [Fact]
+    public async Task DisabledProviderCannotBeSelected()
+    {
+        var handler = new RecordingHandler();
+        var service = CreateService(handler, new Dictionary<string, string?>
+        {
+            ["INFERENCE_PROVIDER"] = "nous",
+            ["NOUS_MODEL"] = "NousResearch/Hermes-test",
+        });
+        var denied = await service.HandleCommandAsync("/provider azure-foundry", "session-a", CancellationToken.None);
+        Assert.Contains("not enabled", denied.Reply);
+        Assert.Equal("nous", (await service.ResolveAsync("session-a", CancellationToken.None)).Provider);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public void UnknownProviderFailsClosed()
+    {
+        Assert.Throws<ArgumentException>(() => CreateService(new RecordingHandler(),
+            new Dictionary<string, string?> { ["INFERENCE_PROVIDER"] = "untrusted" }));
+    }
+
     private ModelPolicyService CreateService(
         HttpMessageHandler handler,
         IDictionary<string, string?>? overrides = null)

@@ -8,6 +8,8 @@ infra:
     environmentName: ${AZURE_ENV_NAME}
     location: ${AZURE_LOCATION}
     deploymentPrincipalId: ${AZURE_PRINCIPAL_ID}
+    modelName: ${FOUNDRY_MODEL_NAME}
+    modelVersion: ${FOUNDRY_MODEL_VERSION}
 
 hooks:
   preprovision:

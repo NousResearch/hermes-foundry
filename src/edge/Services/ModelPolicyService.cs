@@ -31,6 +31,9 @@ public sealed class ModelPolicyService
     private readonly TokenCredential _credential;
     private readonly SemaphoreSlim _inventoryLock = new(1, 1);
     private readonly SemaphoreSlim _preferencesLock = new(1, 1);
+    private readonly string _defaultProvider;
+    private readonly HashSet<string> _allowedProviders;
+    private readonly IReadOnlyList<string> _nousModels;
     private readonly string _projectEndpoint;
     private readonly string _configuredPrimary;
     private readonly IReadOnlyList<string> _priority;
@@ -60,6 +63,20 @@ public sealed class ModelPolicyService
         _httpFactory = httpFactory;
         _logger = logger;
         _credential = credential;
+
+        // Missing settings preserve previously deployed Foundry-only agents.
+        _defaultProvider = (configuration["INFERENCE_PROVIDER"] ?? "azure-foundry").Trim().ToLowerInvariant();
+        _allowedProviders = new HashSet<string>(ParseList(
+            configuration["INFERENCE_ALLOWED_PROVIDERS"] ?? _defaultProvider).Select(p => p.ToLowerInvariant()), StringComparer.OrdinalIgnoreCase);
+        if (!_allowedProviders.Contains(_defaultProvider) || _allowedProviders.Count == 0
+            || _allowedProviders.Any(p => p != "nous" && p != "azure-foundry"))
+            throw new ArgumentException("Inference providers must be nous or azure-foundry and include the default.");
+        _nousModels = ParseList(configuration["NOUS_MODEL"])
+            .Concat(ParseList(configuration["NOUS_MODELS"]))
+            .Where(m => Regex.IsMatch(m, "^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$"))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (_allowedProviders.Contains("nous") && _nousModels.Count == 0)
+            throw new ArgumentException("NOUS_MODEL or NOUS_MODELS is required when Nous inference is enabled.");
 
         _configuredPrimary = CleanName(configuration["MODEL_DEPLOYMENT_NAME"])
             ?? "gpt-5.6-terra";
@@ -103,21 +120,22 @@ public sealed class ModelPolicyService
         CancellationToken cancellationToken,
         bool forceRefresh = false)
     {
-        var inventory = await GetInventoryAsync(cancellationToken, forceRefresh);
-        var preference = await GetPreferenceAsync(sessionKey, cancellationToken);
+        var provider = await GetProviderAsync(sessionKey, cancellationToken);
+        var inventory = await GetProviderInventoryAsync(provider, cancellationToken, forceRefresh);
+        var preference = await GetPreferenceAsync(ModelPreferenceKey(provider, sessionKey), cancellationToken);
         var explicitlySelected = preference is not null
             && inventory.Models.Contains(preference, StringComparer.OrdinalIgnoreCase);
         var selected = explicitlySelected
             ? inventory.Models.First(m => m.Equals(preference, StringComparison.OrdinalIgnoreCase))
-            : ChooseAutomatic(inventory.Models);
+            : provider == "nous" ? inventory.Models.FirstOrDefault() ?? "" : ChooseAutomatic(inventory.Models);
 
         return new ModelSelection(
             selected,
             inventory.Models,
-            _priority,
+            provider == "nous" ? _nousModels : _priority,
             explicitlySelected,
             inventory.Source,
-            inventory.Warning);
+            inventory.Warning) { Provider = provider };
     }
 
     /// <summary>
@@ -130,6 +148,25 @@ public sealed class ModelPolicyService
         CancellationToken cancellationToken)
     {
         var text = LeadingTeamsMention.Replace(activityText ?? "", "").Trim();
+        if (text.Equals("/provider", StringComparison.OrdinalIgnoreCase)
+            || text.StartsWith("/provider ", StringComparison.OrdinalIgnoreCase))
+        {
+            var requestedProvider = text["/provider".Length..].Trim().ToLowerInvariant();
+            if (requestedProvider == "auto" || requestedProvider == "default")
+                await SetPreferenceAsync("provider:" + sessionKey, null, cancellationToken);
+            else if (requestedProvider.Length > 0)
+            {
+                if (!_allowedProviders.Contains(requestedProvider))
+                    return new ModelCommandResult(true, "That provider is not enabled by the administrator.");
+                await SetPreferenceAsync("provider:" + sessionKey, requestedProvider, cancellationToken);
+            }
+            var current = await GetProviderAsync(sessionKey, cancellationToken);
+            return new ModelCommandResult(true, $"Inference provider: `{current}`. " +
+                $"Enabled: {string.Join(", ", _allowedProviders)}. Use `/model` to choose a model. " +
+                "This applies to your conversation; scheduled routines use the administrator's default.");
+        }
+        var provider = await GetProviderAsync(sessionKey, cancellationToken);
+        var preferenceKey = ModelPreferenceKey(provider, sessionKey);
         if (!text.Equals("/model", StringComparison.OrdinalIgnoreCase)
             && !text.StartsWith("/model ", StringComparison.OrdinalIgnoreCase))
             return new ModelCommandResult(false, "");
@@ -144,7 +181,7 @@ public sealed class ModelPolicyService
             || argument.Equals("default", StringComparison.OrdinalIgnoreCase)
             || argument.Equals("reset", StringComparison.OrdinalIgnoreCase))
         {
-            await SetPreferenceAsync(sessionKey, null, cancellationToken);
+            await SetPreferenceAsync(preferenceKey, null, cancellationToken);
             var automatic = await ResolveAsync(sessionKey, cancellationToken, forceRefresh: true);
             if (!automatic.IsAvailable)
             {
@@ -157,7 +194,7 @@ public sealed class ModelPolicyService
                 $"Priority: {FormatInlineList(automatic.Priority)}");
         }
 
-        var inventory = await GetInventoryAsync(cancellationToken, forceRefresh);
+        var inventory = await GetProviderInventoryAsync(provider, cancellationToken, forceRefresh);
         if (!string.IsNullOrWhiteSpace(argument) && !forceRefresh
             && !argument.Equals("list", StringComparison.OrdinalIgnoreCase)
             && !argument.Equals("status", StringComparison.OrdinalIgnoreCase))
@@ -173,7 +210,7 @@ public sealed class ModelPolicyService
                     $"`{argument}` is not an available model for this Hermes agent.\n\n{available}");
             }
 
-            await SetPreferenceAsync(sessionKey, requested, cancellationToken);
+            await SetPreferenceAsync(preferenceKey, requested, cancellationToken);
             return new ModelCommandResult(true,
                 $"Model changed to `{requested}` for your Hermes conversation. " +
                 "Use `/model auto` to return to the administrator's priority order.");
@@ -194,12 +231,26 @@ public sealed class ModelPolicyService
             ? $"\n\nDiscovery warning: {selection.Warning}"
             : "";
         return new ModelCommandResult(true,
-            $"Current model: `{selection.Model}` ({mode}).\n\n" +
+            $"Current provider: `{selection.Provider}`. Model: `{selection.Model}` ({mode}).\n\n" +
             $"Available: {FormatInlineList(selection.Available)}\n\n" +
             $"Automatic priority: {FormatInlineList(selection.Priority)}\n\n" +
             "Use `/model <name>` to select one, or `/model auto` to use the best available model " +
             $"from the priority list.{warning}");
     }
+
+    private async Task<string> GetProviderAsync(string sessionKey, CancellationToken ct)
+    {
+        var preference = await GetPreferenceAsync("provider:" + sessionKey, ct);
+        return preference is not null && _allowedProviders.Contains(preference) ? preference : _defaultProvider;
+    }
+
+    private static string ModelPreferenceKey(string provider, string sessionKey) =>
+        provider == "azure-foundry" ? sessionKey : provider + ":model:" + sessionKey;
+
+    private Task<ModelInventory> GetProviderInventoryAsync(string provider, CancellationToken ct, bool refresh) =>
+        provider == "nous"
+            ? Task.FromResult(new ModelInventory(_nousModels, "administrator Nous model allowlist", null))
+            : GetInventoryAsync(ct, refresh);
 
     private async Task<ModelInventory> GetInventoryAsync(
         CancellationToken cancellationToken,
@@ -374,7 +425,7 @@ public sealed class ModelPolicyService
             if (stored is null) return;
             foreach (var (key, value) in stored)
             {
-                var model = CleanName(value);
+                var model = Regex.IsMatch(value, "^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$") ? value : null;
                 if (key.Length == 64 && model is not null) _preferences[key] = model;
             }
         }
@@ -485,11 +536,13 @@ public sealed record ModelSelection(
     string DiscoverySource,
     string? Warning)
 {
+    public string Provider { get; init; } = "azure-foundry";
+
     public bool IsAvailable => !string.IsNullOrWhiteSpace(Model);
 
     public string TrustedPromptContext =>
-        "TRUSTED FOUNDRY MODEL POLICY: This turn is running on deployment '" + Model + "'. " +
-        "The chat-capable deployments currently available to this Hermes runtime are: " +
+        "TRUSTED MODEL POLICY: This turn uses provider '" + Provider + "', model '" + Model + "'. " +
+        "The administrator-approved models for this provider are: " +
         (Available.Count == 0 ? "unknown" : string.Join(", ", Available)) + ". " +
         "The user can inspect or change their conversation model in Teams with /model. " +
         "Do not claim that an unlisted model is available.";

@@ -23,7 +23,8 @@ Stack A / Stack B comparison unfalsifiable.
 So this is a deliberate stand-in: same two endpoints, same auth, no sandbox layer. Swap it for
 sandbox-router once ACA Sandboxes is enabled and nothing on the edge side needs to change.
 
-Standard library only, on purpose. No pip install, no lockfile, nothing to audit.
+HTTP handling uses the standard library. Per-user portal session encryption uses
+cryptography from the pinned Hermes runtime.
 """
 
 import hashlib
@@ -48,6 +49,7 @@ if _GATEWAY_DIR not in sys.path:
 from state_sync import StateSyncManager, load_config as load_state_sync_config
 from state_sync import write_config as write_state_sync_config
 from state_sync import unlisted_durable_candidates
+from portal_auth import PortalAuth, EncryptedStore, PortalError
 from access_policy import AccessPolicy, AccessError, GraphTransport, INSTRUCTIONS as ACCESS_INSTRUCTIONS
 
 HERMES_URL = os.environ["HERMES_URL"].rstrip("/")
@@ -103,6 +105,7 @@ _agent_token = {
     "token": "", "upn": "", "tier": "outsider", "routine_capability": "", "correlation": ""
 }
 _authority_lock = threading.Lock()
+_portal_credentials = None
 
 # The sidecar asks for the current turn's authority through /v1/agent-token, but that request does
 # not yet carry an end-to-end turn ID. A ThreadingHTTPServer could otherwise run two users' Hermes
@@ -136,7 +139,9 @@ def _access_service():
 
 
 def _clear_turn_authority():
+    global _portal_credentials
     with _authority_lock:
+        _portal_credentials = None
         _agent_token.update(
             token="", upn="", tier="outsider", routine_capability="", correlation="")
 
@@ -462,6 +467,18 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def do_GET(self):
+        if self.path == "/v1/portal-token":
+            if not GATEWAY_KEY or not self._authorised():
+                self._send(401, b'{"error":"unauthorized"}')
+                return
+            with _authority_lock:
+                credentials = dict(_portal_credentials) if _portal_credentials else None
+            if not credentials:
+                self._send(403, b'{"error":"no authenticated portal caller"}')
+                return
+            self._send(200, json.dumps(credentials).encode(), extra_headers={"Cache-Control": "no-store"})
+            return
+
         if self.path == "/":
             self._send(200, b'{"ok":true}')
             return
@@ -542,7 +559,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._do_POST()
 
     def _do_POST(self):
-        global _access_confirmation
+        global _access_confirmation, _portal_credentials
         # Drain the body BEFORE anything can return early. On a keep-alive connection an unread
         # body stays in the socket buffer and the server parses it as the next request line, so a
         # rejected request corrupts the one after it:
@@ -686,6 +703,49 @@ class Handler(BaseHTTPRequestHandler):
                 log("[edge] agent.token.refreshed")
             else:
                 log("[edge] agent.token.cleared | current turn supplied none")
+
+            def portal_reply(text):
+                text += "\n\nPortal commands: /portal login, /portal status, /portal logout."
+                enabled = {value.strip().lower() for value in os.environ.get(
+                    "INFERENCE_ALLOWED_PROVIDERS", os.environ.get("INFERENCE_PROVIDER", "azure-foundry")).split(",")}
+                if "azure-foundry" in enabled:
+                    text += "\n\nYou can also use Foundry inference: send /provider azure-foundry, then /model to choose a model."
+                self._send(200, json.dumps({"choices": [{"message": {
+                    "role": "assistant", "content": text}}]}).encode())
+
+            # Portal commands and authentication run before inference and never enter model history.
+            try:
+                portal_request = json.loads(raw or b"{}")
+                inbound = portal_request.get("access_confirmation_input") or ""
+                inbound = re.sub(r"<at>.*?</at>", "", inbound, flags=re.DOTALL).strip()
+                match = re.fullmatch(r"/portal(?:\s+(login|status|logout))?", inbound, re.IGNORECASE)
+                command = (match.group(1) or "status").lower() if match else ""
+                provider = portal_request.get("provider") or os.environ.get("INFERENCE_PROVIDER", "azure-foundry")
+                allowed = os.environ.get("INFERENCE_ALLOWED_PROVIDERS", os.environ.get("INFERENCE_PROVIDER", "azure-foundry")).split(",")
+                if match or provider == "nous":
+                    interactive = self.headers.get("X-Portal-Interactive") == "true"
+                    if "nous" not in {value.strip().lower() for value in allowed}:
+                        raise PortalError("Nous inference is not enabled by the administrator.")
+                    if match and not interactive:
+                        raise PortalError("Use /portal commands in a one-to-one Teams chat with this agent.")
+                    if not GATEWAY_KEY or not tok or _access_context.get("tier") not in {"owner", "colleague"}:
+                        raise PortalError("Portal sign-in requires a verified Microsoft 365 caller.")
+                    endpoint = os.environ.get("NOUS_INFERENCE_BASE_URL", "https://inference-api.nousresearch.com/v1").rstrip("/")
+                    store = EncryptedStore(GraphTransport(tok), os.environ.get("IdentitySignKey", ""),
+                                           dict(_access_context), endpoint)
+                    reply, credentials = PortalAuth(store, endpoint).handle(command, interactive)
+                    if reply:
+                        portal_reply(reply)
+                        return
+                    with _authority_lock:
+                        _portal_credentials = credentials
+            except PortalError as exc:
+                portal_reply(str(exc))
+                return
+            except Exception:
+                # Fail closed: no fallback to another user's token or startup billing identity.
+                portal_reply("Portal authentication is temporarily unavailable. Send /portal login in a one-to-one Teams chat to try again.")
+                return
 
             # Refresh before Hermes sees every verified-owner turn. The first turn hydrates the
             # complete archive; later turns perform cheap head checks and merge another session's

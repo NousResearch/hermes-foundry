@@ -77,11 +77,13 @@ COPY --from=aspnet-runtime /usr/share/dotnet /usr/share/dotnet
 # ladder depends on it DIRECTLY and was measured against exactly 12.1.1, so an explicit pin keeps a
 # future python-pptx change from silently breaking image attachments — or shifting the encoder under
 # a size budget that was chosen from measurements.
+# MCP 1.9.4 imports eval_type_backport, removed in Pydantic 2.14.
+# Pin its compatible dependency so a fresh ACR build cannot silently upgrade it.
 RUN set -eux; \
     /usr/bin/python3 -m venv /opt/sidecar-venv; \
     /opt/sidecar-venv/bin/pip install --no-cache-dir --upgrade pip; \
     /opt/sidecar-venv/bin/pip install --no-cache-dir \
-        "mcp==1.9.4" "pypdf==5.1.0" "playwright==1.49.1" \
+        "mcp==1.9.4" "pydantic==2.13.4" "pypdf==5.1.0" "playwright==1.49.1" \
         "python-docx==1.1.2" "openpyxl==3.1.5" "python-pptx==1.0.2" \
         "pillow==12.1.1" \
         "fastapi==0.115.6" "uvicorn==0.34.0" "httpx==0.28.1"
@@ -90,6 +92,10 @@ RUN set -eux; \
 # router drops the fallback entry's auth_mode and can silently construct an API-key client. Apply a
 # narrow, asserted source overlay; the build fails if the pinned upstream layout changes instead of
 # producing an image with an unverified partial patch.
+COPY src/hermes-patches/foundry_inference.py /opt/hermes/hermes_cli/foundry_inference.py
+COPY src/hermes-patches/apply_nous_inference_patch.py /tmp/apply_nous_inference_patch.py
+RUN /usr/bin/python3 /tmp/apply_nous_inference_patch.py && rm /tmp/apply_nous_inference_patch.py
+
 COPY src/hermes-patches/apply_fallback_entra_patch.py /tmp/apply_fallback_entra_patch.py
 COPY src/hermes-patches/apply_foundry_annotations_patch.py /tmp/apply_foundry_annotations_patch.py
 RUN /usr/bin/python3 /tmp/apply_fallback_entra_patch.py \
@@ -104,9 +110,12 @@ COPY --from=edge-build /out/ /opt/edge/
 COPY src/gateway/app.py /opt/gateway/app.py
 COPY src/gateway/state_sync.py /opt/gateway/state_sync.py
 COPY src/gateway/access_policy.py /opt/gateway/access_policy.py
+COPY src/gateway/portal_auth.py /opt/gateway/portal_auth.py
+RUN /opt/hermes/.venv/bin/python -c "from cryptography.hazmat.primitives.ciphers.aead import AESGCM"
 COPY src/sidecar/agent365_mcp.py /opt/sidecar/agent365_mcp.py
 COPY src/sidecar/secure_http.py /opt/sidecar/secure_http.py
 COPY config/state-sync.defaults.json /opt/state-sync.defaults.json
+COPY LICENSE /opt/hermes-foundry/LICENSE
 COPY start.sh    /opt/start.sh
 RUN chmod +x /opt/start.sh
 

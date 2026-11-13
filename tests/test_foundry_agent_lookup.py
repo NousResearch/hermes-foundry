@@ -150,7 +150,7 @@ class PostProvisionExistingAgentTests(unittest.TestCase):
     EXPECTED = "22222222-2222-2222-2222-222222222222"
     EXISTING = "33333333-3333-3333-3333-333333333333"
 
-    def run_hook(self, blueprint=EXISTING, lookup_status=0, raw_fixture=None, expected=None):
+    def run_hook(self, blueprint=EXISTING, lookup_status=0, raw_fixture=None, expected=None, force=False, update_failure=False):
         # Execute the real hook in an isolated checkout. All Azure and downstream write commands
         # are stubs; no developer credentials, local azd environment or production tenant is used.
         with tempfile.TemporaryDirectory() as directory:
@@ -172,9 +172,20 @@ class PostProvisionExistingAgentTests(unittest.TestCase):
                     path.write_text(pathlib.Path(os.environ['FIXTURE']).read_text())
                 sys.exit(code)
             """))
+            (scripts / "reinstall_agent.py").write_text("""import os, subprocess, tempfile
+result = tempfile.mktemp()
+env = dict(os.environ, HERMES_VERSION_RESULT_FILE=result)
+subprocess.run(['./build.sh', 'reinstall-test'], check=True, env=env)
+subprocess.run(['./new-version.sh', 'reinstall-test'], check=True, env=env)
+subprocess.run(['./scripts/route-agent-version.sh'], check=True, env=env)
+print('Reinstalled application version 88')
+""")
             build = temp / "build.sh"
             build.write_text('#!/usr/bin/env bash\naz acr build --registry "$REG" --image "hermes-full-foundry:$1"\n')
             build.chmod(0o700)
+            update = temp / "new-version.sh"
+            update.write_text('#!/usr/bin/env bash\nprintf "new-version\\n" >> "$CALL_LOG"\n[[ "$UPDATE_FAILURE" != "true" ]] || exit 1\nprintf \'{"previous":"87","version":"88"}\' > "$HERMES_VERSION_RESULT_FILE"\n')
+            update.chmod(0o700)
             fake_az = binaries / "az"
             fake_az.write_text(textwrap.dedent("""\
                 #!/usr/bin/env bash
@@ -186,7 +197,8 @@ class PostProvisionExistingAgentTests(unittest.TestCase):
             """))
             fake_az.chmod(0o700)
             for name in ("create-hosted-blueprint.sh", "publish-autopilot-blueprint.sh",
-                         "configure-blueprint-graph-permissions.sh", "install-agent-rbac-automation.sh"):
+                         "configure-blueprint-graph-permissions.sh", "install-agent-rbac-automation.sh",
+                         "route-agent-version.sh"):
                 stub = scripts / name
                 stub.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "' + name + '" >> "$CALL_LOG"\n')
                 stub.chmod(0o700)
@@ -200,6 +212,8 @@ class PostProvisionExistingAgentTests(unittest.TestCase):
                 "TENANT_ID": self.EXPECTED, "BLUEPRINT_ID": expected or self.EXPECTED,
                 "MAIB_NAME": "example-blueprint", "BOT_SERVICE_ID": "example-bot",
                 "HERMES_INSTALL_ROUTINE_AUTOMATION": "true",
+                "HERMES_FORCE_REDEPLOY": "true" if force else "false",
+                "UPDATE_FAILURE": "true" if update_failure else "false",
             })
             result = subprocess.run(["bash", str(hook)], env=env, capture_output=True,
                                     text=True, timeout=10, check=False)
@@ -212,11 +226,33 @@ class PostProvisionExistingAgentTests(unittest.TestCase):
         self.assertIn(self.EXISTING, result.stdout)
         self.assertIn(self.EXPECTED, result.stdout)
         self.assertIn("Azure infrastructure provisioning ran before this check", result.stdout)
-        self.assertNotIn("Developer provisioning is complete", result.stdout)
+        self.assertNotIn("AZURE PROVISIONING PHASE FINISHED", result.stdout)
         self.assertNotIn("resuming publication", result.stdout)
         self.assertEqual("", result.stderr)
         self.assertNotIn("acr build", calls)
         self.assertNotIn(".sh", calls)
+
+    def test_force_rebuilds_updates_and_routes_before_publication(self):
+        result, calls = self.run_hook(blueprint=self.EXPECTED, force=True)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertLess(calls.index("acr build"), calls.index("new-version"))
+        self.assertLess(calls.index("new-version"), calls.index("route-agent-version.sh"))
+        self.assertLess(calls.index("route-agent-version.sh"), calls.index("publish-autopilot-blueprint.sh"))
+        self.assertNotIn("create-hosted-blueprint.sh", calls)
+        self.assertIn("Reinstalled application version 88", result.stdout)
+
+    def test_force_failed_update_does_not_route_or_publish(self):
+        result, calls = self.run_hook(blueprint=self.EXPECTED, force=True, update_failure=True)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("new-version", calls)
+        self.assertNotIn("route-agent-version.sh", calls)
+        self.assertNotIn("publish-autopilot-blueprint.sh", calls)
+
+    def test_force_mismatched_identity_fails_without_build_or_route(self):
+        result, calls = self.run_hook(force=True)
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn("acr build", calls)
+        self.assertNotIn("route-agent-version.sh", calls)
 
     def test_same_identity_resumes_publication_without_rebuilding(self):
         result, calls = self.run_hook(blueprint=self.EXPECTED)
@@ -239,7 +275,7 @@ class PostProvisionExistingAgentTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertLess(calls.index("acr build"), calls.index("create-hosted-blueprint.sh"))
         self.assertLess(calls.index("create-hosted-blueprint.sh"), calls.index("publish-autopilot-blueprint.sh"))
-        self.assertIn("Developer provisioning is complete", result.stdout)
+        self.assertIn("AZURE PROVISIONING PHASE FINISHED", result.stdout)
 
     def test_lookup_failure_remains_an_error_without_writes(self):
         result, calls = self.run_hook(lookup_status=1)

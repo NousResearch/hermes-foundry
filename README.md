@@ -259,6 +259,8 @@ each value:
 | Fixed runtime choice | `AgentLogic=HermesRouter`, `McpDiscoverySource=Manifest` | These select the normal Hermes path and the committed Microsoft 365 tool manifest. They are not tenant-specific. |
 | Optional diagnostics | `A365AgentTracingId` | A deployment-specific tracing value, only when Agent 365 tracing is configured. |
 
+Setup keeps the default inference provider in the selectable-provider list. When Foundry is enabled, enter its model name (for example `openai/gpt-6.1-sol`); setup resolves the version automatically from the Azure catalog. `FOUNDRY_MODEL_VERSION` remains available as an advanced override.
+
 Scheduled routines use the blueprint's Key Vault credential for Agent OBO and a stable
 `RoutineBindingSignKey` stored through deployment automation. They also require each child Agent
 Identity to have **Foundry User** at project scope so it can manage its own routines. Install the
@@ -713,3 +715,135 @@ Known non-production areas include:
   licensing, disaster recovery, and long-term state migration/backup procedures are not finalized.
 
 The prioritized productionization work is tracked in [ROADMAP.md](ROADMAP.md).
+
+### Reinstalling an existing application
+
+To reinstall the current application into the selected azd environment, run:
+
+```sh
+./deploy.sh --force
+```
+
+`./setup.sh --force` is equivalent. The installer archives the previous checkpoint
+under the ignored `deployment-output/setup-history/` directory, prompts for settings,
+and reprovisions the infrastructure. If the agent already exists with the matching
+blueprint, it rebuilds the current source, creates a replacement version with the
+configured inference/egress settings, verifies it, and **switches live traffic to it**.
+The previous version is retained for rollback. If the agent is absent, setup creates it.
+It then continues publication, permission reconciliation, and guided acceptance.
+
+This is an in-place reinstall: identities, existing instances, and stored data are
+preserved. It does not delete the resource group, buy licenses, or recreate tenant
+accounts. A mismatched identity stops the reinstall; it cannot silently replace an
+unrelated blueprint. Select the azd environment belonging to the app you intend to
+reinstall. This does not automatically upgrade every Hermes app in the tenant.
+
+The archive is private; do not commit it. The installer lock prevents replacing an
+active installer's checkpoint. Normal provisioning/approval checks still apply.
+After interruption use `./deploy.sh --continue`; the checkpoint retains reinstall
+intent. A retry during provisioning may build another version; old versions remain.
+Use `build.sh` and `new-version.sh` if you want a separately reviewed image update
+without automatic activation. Do not combine `--force` with other setup modes.
+
+### Inference provider selection
+
+Hermes can use Nous portal inference or Azure Foundry inference while remaining
+hosted in Foundry. New installations default to Nous; existing deployments retain
+Foundry unless explicitly reconfigured.
+
+Run `./deploy.sh` (equivalent to `./setup.sh`). The interactive installer asks for
+the default provider, providers users may select, Nous model IDs, and the Foundry
+model to deploy, with automatic catalog version lookup. There is no shared portal credential to configure.
+Each user sends `/portal login` in a one-to-one Teams chat, signs into their own
+Nous account in the browser, then sends `/portal status`. `/portal logout`
+disconnects that user's account. Before login, the gateway responds with procedural
+sign-in instructions and offers `/provider azure-foundry` when allowed; no inference
+is needed for onboarding. Credentials are encrypted and isolated by caller,
+agent, and tenant; billing follows the signed-in user's portal account.
+
+**Egress is configured automatically during deployment.** For Nous-enabled versions,
+the scripts create the portal authorization and inference hostname rules, attach the resulting RAI
+policy to the new agent version, and verify Azure retained it. On managed networks
+that allow only approved outbound traffic, they also create the required FQDN
+firewall rules. No manual policy creation or policy-ID copying is required.
+`./new-version.sh <image-tag>` performs the same work for upgrades while preserving
+existing policy controls; it leaves traffic switching to the operator. Existing
+unrestricted outbound access stays unrestricted. Customer-managed VNet firewalls
+are outside this automation. These controls use Microsoft's preview APIs.
+
+In Teams, users can run `/provider nous`, `/provider azure-foundry`, and `/model`
+to select from the administrator's allowlists. `/provider default` restores the
+configured default. Choices apply to the caller's conversation; scheduled routines
+use administrator defaults. Users cannot change credentials or network policies
+through these commands.
+
+See [inference configuration](DEPLOYMENT.md#configurable-nous-portal-and-foundry-inference)
+and [automatic egress setup](DEPLOYMENT.md#portal-inference-egress) for environment
+variables, billing identity, secret handling, and verification details.
+
+### License
+
+[MIT](LICENSE), matching NousResearch/hermes-agent.
+
+
+Model input formats in setup:
+
+| Input | Format examples | Automatic normalization |
+| --- | --- | --- |
+| Default Nous portal model | `openai/gpt-6.1-sol`, `openai/gpt-5-mini`, `openai/gpt-4.1` | Bare GPT and o-series names receive `openai/`. Other IDs retain their exact provider/name. |
+| Additional Nous models | `openai/gpt-6.1-sol`, `openai/gpt-5-mini`, `openai/gpt-4.1` | Enter a comma-separated list; each item is normalized and duplicates are removed. |
+| Foundry OpenAI model | `gpt-6.1-sol`, `gpt-5-mini`, `gpt-4.1` | An optional `openai/` prefix is removed. Other provider prefixes are rejected by this OpenAI deployment flow. |
+
+These examples illustrate format, not guaranteed availability in every account or
+region. The portal uses provider-qualified IDs to identify the upstream provider;
+Azure's deployment already specifies OpenAI separately. You can enter
+`gpt-6.1-sol` or `openai/gpt-6.1-sol` in either model field.
+
+
+When the selected azd environment identifies an existing Foundry project, setup
+asks whether to reuse it before provisioning. Accepting updates that project in
+place and preserves its identity; `--force` still rebuilds and reinstalls Hermes.
+Declining pauses safely. The choice is saved for this installation so
+`./setup.sh --continue` does not repeat the confirmation. Project and model
+updates are serialized to avoid concurrent writes to the parent Foundry account.
+
+On reprovisioning, the blueprint deployment step first reads the hosted agent.
+If it exists, setup reuses its bound blueprint client ID for the bot, publication,
+and role automation. It creates a blueprint only when the agent lookup returns
+404; permission and service failures stop setup. An unrelated blueprint created
+by an earlier attempt is not automatically deleted.
+
+
+Resuming a forced reinstall preserves completed work. A private checkpoint under
+`deployment-output/reinstalls/` records the build inputs, image, rollback version,
+and created version. Setup waits up to ten minutes for version readiness, validates
+its requested definition, then rechecks the serving route before switching. If the
+target is already serving, it validates without sending another PATCH. A lost create
+response is reconciled against existing versions; ambiguous results are never blindly
+reposted. Changed build inputs require a new `./deploy.sh --force` run.
+
+`./setup.sh --continue` reuses the recorded build and version. Publication completion
+is also recorded; an uncertain publication requires inspecting Microsoft 365 Requests
+before resubmission. Graph and egress configuration use bounded readback waits without
+repeating their writes. `HERMES_READY_TIMEOUT` and `HERMES_READY_POLL_INTERVAL` override
+the default 600-second readiness timeout and five-second polling interval.
+
+Routine RBAC automation uses a deterministic Logic App name derived from the selected project resource ID and Agent Identity Blueprint ID. A matching legacy installation is reused; a legacy workflow for a different target is left intact and a separate workflow is created. Removal discovers the same name automatically. An explicit `--workflow-name` must still match the requested target. Tenant, subscription, project, and blueprint IDs come from the selected environment and Azure responses; no existing customer IDs are required for a new tenant.
+
+### Deployment completion and safe recovery
+
+`AZURE PROVISIONING PHASE FINISHED` means only that the Azure provisioning hook finished.
+The setup wrapper still verifies the blueprint, Azure Bot, Teams connection, hosted endpoint,
+and first-instance checks. An already approved blueprint skips the publication prompt.
+A completed checkpoint reports `SETUP ALREADY COMPLETE` when its runtime checks still pass.
+
+If setup reports an Azure Bot identity mismatch, publication may already be approved while the
+Teams connection is still blocked. Do not publish again or delete the blueprint. Compare the
+selected environment's Bot resource, application ID, tenant, blueprint, and Activity Protocol
+endpoint. Correct the selected resource or deployment configuration before resuming. Setup
+refuses to bind a different identity automatically.
+
+Keep `.azure/`, `.deployment.local`, and `deployment-output/` private. They are excluded from
+Git and container build inputs. Release records and upload ZIPs still describe a particular
+installation; do not attach them to public issues. Before committing, run
+`python3 scripts/audit-public-tree.py` to check candidate source files for secrets and local IDs.

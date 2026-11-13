@@ -30,6 +30,7 @@ ACCOUNT=""
 PROJECT=""
 BLUEPRINT_CLIENT_ID=""
 WORKFLOW_NAME="hermes-agent-foundry-role-sync"
+WORKFLOW_EXPLICIT=false
 EXECUTE="false"
 CONFIRM_WORKFLOW_NAME=""
 
@@ -40,7 +41,7 @@ while (($#)); do
     --account) ACCOUNT="${2:?}"; shift 2 ;;
     --project) PROJECT="${2:?}"; shift 2 ;;
     --blueprint-client-id) BLUEPRINT_CLIENT_ID="${2:?}"; shift 2 ;;
-    --workflow-name) WORKFLOW_NAME="${2:?}"; shift 2 ;;
+    --workflow-name) WORKFLOW_NAME="${2:?}"; WORKFLOW_EXPLICIT=true; shift 2 ;;
     --execute) EXECUTE="true"; shift ;;
     --confirm-workflow-name) CONFIRM_WORKFLOW_NAME="${2:?}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -85,6 +86,15 @@ trap cleanup EXIT
 
 # Prove that the requested Foundry target exists before considering the dependent workflow.
 az resource show --ids "$PROJECT_SCOPE" --output none
+
+if [[ "$WORKFLOW_EXPLICIT" != true ]]; then
+  az resource list --resource-group "$RESOURCE_GROUP" \
+    --resource-type Microsoft.Logic/workflows --output json > "$WORK/workflows.json"
+  WORKFLOW_NAME=$(python3 scripts/select_rbac_workflow.py \
+    --project-scope "$PROJECT_SCOPE" --blueprint-id "$BLUEPRINT_CLIENT_ID" \
+    --inventory "$WORK/workflows.json")
+  WORKFLOW_ID="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.Logic/workflows/${WORKFLOW_NAME}"
+fi
 
 if ! az resource show --ids "$WORKFLOW_ID" --output json > "$WORK/workflow.json"; then
   printf 'ERROR: the Logic App could not be read. It may be absent, inaccessible, or unavailable.\n' >&2

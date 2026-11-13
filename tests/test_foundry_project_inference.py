@@ -77,12 +77,17 @@ class FoundryProjectInferenceTests(unittest.TestCase):
         self.assertEqual(resource, "https://cognitiveservices.azure.com")
 
     def test_primary_and_fallback_are_both_entra_authenticated(self):
-        start = (self.root / "start.sh").read_text()
-        self.assertIn('auth_mode: "entra_id"', start)
-        self.assertIn(
-            'FALLBACK_PROVIDER_YAML+="    auth_mode: \\"entra_id\\""',
-            start,
-        )
+        spec = importlib.util.spec_from_file_location("foundry_inference_config",
+            self.root / "src/hermes-patches/foundry_inference.py")
+        config_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(config_module)
+        config = config_module.model_configuration({
+            "MODEL_DEPLOYMENT_NAME": "primary", "FALLBACK_MODEL_DEPLOYMENT_NAME": "fallback",
+            "AZURE_FOUNDRY_BASE_URL": "https://example.services.ai.azure.com/openai/v1",
+        })
+        self.assertEqual(config["model"]["auth_mode"], "entra_id")
+        self.assertTrue(config["fallback_providers"])
+        self.assertTrue(all(p["auth_mode"] == "entra_id" for p in config["fallback_providers"]))
 
         dockerfile = (self.root / "Dockerfile").read_text()
         self.assertIn("apply_fallback_entra_patch.py", dockerfile)

@@ -94,7 +94,7 @@ public sealed class HermesResponseHandler(
         var payload = JsonSerializer.Serialize(new
         {
             model = modelSelection.Model,
-            provider = "azure-foundry",
+            provider = modelSelection.Provider,
             messages = new[] { new { role = "user", content = prompt } }
         });
 
@@ -114,6 +114,8 @@ public sealed class HermesResponseHandler(
         // scheduled execution as owner-authorized only after signature verification above; an
         // unsigned Responses caller cannot set this header or receive a Graph token.
         req.Headers.TryAddWithoutValidation("X-Caller-Tier", "owner");
+        // Verified routine binding, never an owner inferred from the most recent interactive turn.
+        req.Headers.TryAddWithoutValidation("X-Caller-Object-Id", binding.OwnerObjectId);
         req.Headers.TryAddWithoutValidation("X-Access-Tenant", binding.TenantId);
         req.Headers.TryAddWithoutValidation("X-Access-Agent", binding.AgentUserId);
         // No interactive owner/conversation headers: scheduled work cannot confirm access grants.

@@ -19,34 +19,9 @@ set -uo pipefail
 
 log() { echo "[plan-f] $*"; }
 
-: "${MODEL_DEPLOYMENT_NAME:?MODEL_DEPLOYMENT_NAME is required}"
-: "${FALLBACK_MODEL_DEPLOYMENT_NAME:?FALLBACK_MODEL_DEPLOYMENT_NAME is required}"
-: "${AZURE_FOUNDRY_BASE_URL:?AZURE_FOUNDRY_BASE_URL is required}"
-
-# The edge chooses the first currently deployed model in this administrator-defined order. Hermes'
-# own fallback chain uses the same order after a selected model exhausts its normal retries. Keep
-# the legacy single fallback variable as a compatibility input; MODEL_PRIORITY is the extensible
-# policy and may contain any number of safe Azure deployment names.
-MODEL_PRIORITY="${MODEL_PRIORITY:-${MODEL_DEPLOYMENT_NAME},${FALLBACK_MODEL_DEPLOYMENT_NAME}}"
-export MODEL_PRIORITY
-FALLBACK_PROVIDER_YAML=""
-declare -A _seen_fallback_models=()
-IFS=',' read -r -a _priority_models <<< "$MODEL_PRIORITY"
-for _raw_model in "${_priority_models[@]}" "$FALLBACK_MODEL_DEPLOYMENT_NAME"; do
-  _model="${_raw_model//[[:space:]]/}"
-  [ -n "$_model" ] || continue
-  if [[ ! "$_model" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
-    log "WARNING: ignoring unsafe model deployment name in MODEL_PRIORITY"
-    continue
-  fi
-  [ -z "${_seen_fallback_models[$_model]:-}" ] || continue
-  _seen_fallback_models[$_model]=1
-  FALLBACK_PROVIDER_YAML+="  - provider: \"azure-foundry\""$'\n'
-  FALLBACK_PROVIDER_YAML+="    model: \"${_model}\""$'\n'
-  FALLBACK_PROVIDER_YAML+="    base_url: \"${AZURE_FOUNDRY_BASE_URL}\""$'\n'
-  FALLBACK_PROVIDER_YAML+="    auth_mode: \"entra_id\""$'\n'
-done
-unset _seen_fallback_models _priority_models _raw_model _model
+# Legacy versions without INFERENCE_PROVIDER remain Foundry-only.
+export INFERENCE_PROVIDER="${INFERENCE_PROVIDER:-azure-foundry}"
+INFERENCE_CONFIG_YAML=$(python3 /opt/hermes/hermes_cli/foundry_inference.py) || exit 1
 
 # ---- shared secrets: derive, never re-declare -------------------------------------------------
 # Three processes must agree on two secrets, and each one is named DIFFERENTLY at each end:
@@ -128,13 +103,7 @@ fi
 mkdir -p /opt/data
 cat > /tmp/hermes-config.yaml <<YAML
 _config_version: 12
-model:
-  default: "${MODEL_DEPLOYMENT_NAME}"
-  provider: "azure-foundry"
-  base_url: "${AZURE_FOUNDRY_BASE_URL}"
-  auth_mode: "entra_id"
-fallback_providers:
-${FALLBACK_PROVIDER_YAML}
+${INFERENCE_CONFIG_YAML}
 agent:
   disabled_toolsets: ["file", "terminal", "code_execution", "browser", "project"]
 mcp_servers:

@@ -2,9 +2,15 @@
 # Create a NEW Foundry hosted agent bound to the explicit Managed Agent Identity Blueprint created
 # by the Bicep deployment. This is the same construction used by the proven hfull deployment.
 set -euo pipefail
+# Explicitly configured inference settings are copied into the new version; credentials are not.
+
 cd "$(dirname "$0")/.."
 
 [ ! -f .deployment.local ] || source ./.deployment.local
+for inference_setting in RAI_POLICY_ID INFERENCE_PROVIDER INFERENCE_ALLOWED_PROVIDERS NOUS_MODEL NOUS_MODELS NOUS_INFERENCE_BASE_URL; do
+  if declare -p "$inference_setting" >/dev/null 2>&1; then export "$inference_setting"; fi
+done
+
 
 usage() {
   cat <<'EOF'
@@ -110,6 +116,8 @@ else
   fi
 fi
 
+python3 scripts/inference_settings.py --validate-new
+
 if [ -n "${IMAGE:-}" ]; then
   RESOLVED_IMAGE="$IMAGE"
 elif [ -n "${REG:-}" ] && [ -n "${TAG:-}" ]; then
@@ -198,6 +206,9 @@ env = {
 }
 if allow:
     env["MODEL_ALLOWED_DEPLOYMENTS"] = allow
+sys.path.insert(0, "scripts")
+from inference_settings import apply
+apply(env, new_install=True)
 body = {
     "definition": {
         "kind": "hosted",
@@ -234,6 +245,8 @@ if $DRY_RUN; then
   exit 0
 fi
 
+python3 scripts/configure_inference_egress.py --body "$WORK/v1.json" --account "$ACCOUNT"
+
 TOKEN=$(az account get-access-token --resource "$RESOURCE" --query accessToken -o tsv)
 create_version() {
   local body=$1 output=$2
@@ -244,21 +257,8 @@ create_version() {
 }
 
 wait_active() {
-  local version=$1 output=$2
-  for _ in $(seq 1 60); do
-    az rest --method GET --resource "$RESOURCE" \
-      --url "${BASE}/agents/${AGENT}/versions/${version}?api-version=v1" -o json > "$output"
-    status=$(python3 - "$output" <<'PY'
-import json, sys
-print(json.load(open(sys.argv[1])).get("status") or "unknown")
-PY
-)
-    [ "$status" = active ] && return 0
-    [ "$status" = failed ] && { echo "ERROR: version provisioning failed" >&2; return 1; }
-    sleep 5
-  done
-  echo "ERROR: timed out waiting for hosted-agent version" >&2
-  return 1
+  python3 scripts/wait_foundry_state.py \
+    --url "${BASE}/agents/${AGENT}/versions/$1?api-version=v1" --output "$2"
 }
 
 echo "Creating hosted-agent version bound to explicit MAIB ${MAIB_NAME}..."
@@ -270,6 +270,8 @@ PY
 )
 [ -n "$V1" ] || { echo "ERROR: create response contained no version" >&2; exit 1; }
 wait_active "$V1" "$WORK/v1-active.json"
+python3 scripts/verify_hosted_version.py "$WORK/v1.json" "$WORK/v1-active.json"
+python3 scripts/configure_inference_egress.py --body "$WORK/v1.json" --verify "$WORK/v1-active.json"
 python3 - "$WORK/v1-active.json" "$RESOLVED_IMAGE" <<'PY'
 import json, sys
 version = json.load(open(sys.argv[1]))

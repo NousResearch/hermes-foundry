@@ -158,7 +158,9 @@ def deployment(state):
         not bot.get("id", "").lower().startswith("/subscriptions/" + state["subscription"] + "/") or
         guid(bot.get("properties", {}).get("msaAppId", "")) != target["BLUEPRINT_ID"] or
         guid(bot.get("properties", {}).get("msaAppTenantId", "")) != state["tenant"]):
-        raise RuntimeError("The Azure Bot does not match this tenant, subscription, and blueprint.")
+        publication = "Blueprint publication is already approved; do not publish it again. " if approved(agent) else ""
+        raise RuntimeError(publication + "SETUP INCOMPLETE: The Azure Bot does not match this tenant, subscription, and blueprint. "
+                           "Teams connection validation failed. Review the Bot resource and deployment outputs; resuming without correcting the mismatch will fail again.")
     endpoint = urllib.parse.urlsplit(bot.get("properties", {}).get("endpoint", ""))
     expected = urllib.parse.urlsplit(f"{base}/agents/{values['AGENT']}/endpoint/protocols/activityProtocol")
     if (endpoint.scheme != expected.scheme or endpoint.netloc != expected.netloc or
@@ -205,7 +207,7 @@ def prerequisites(state):
     print("   For this installer, subscription Owner is the simplest setup; scoped Contributor + RBAC admin")
     print("   requires the resource-group/role scopes described in ADVANCED_TENANT_DEPLOYMENT.md.")
     print("5. https://ai.azure.com/ : check hosted-agent regional availability and model quota.")
-    print("   The template currently requests gpt-5-mini Global Standard, capacity 5 (5,000 TPM).")
+    print("   The template deploys your selected Foundry model/version with Global Standard capacity 5.")
     print("   This is a small pilot quota; see infra/main.bicep for model/version/capacity choices.")
     print("Azure charges apply. Setup builds the image in ACR (no local Docker required), creates the")
     print("runtime and private publication, and by default installs routine RBAC automation once per tenant deployment.")
@@ -280,6 +282,18 @@ def enable_runtime(state):
     print("PASS: Foundry endpoint enabled; serving Hermes version and routing verified.")
 
 
+def teams_access_guide():
+    print("\nFIND HERMES IN MICROSOFT TEAMS")
+    print("After publication and successful connection checks, Hermes Agent on Foundry should become available in Teams within a few minutes.")
+    print("Microsoft-side provisioning sometimes takes up to a few hours. This is an observed delay, not a guaranteed deadline.")
+    print("1. Open Microsoft Teams and switch to the organization where Hermes was installed.")
+    print("2. Select Apps > Built for your org. Search for Hermes Agent on Foundry.")
+    print("3. Open Hermes Agent on Foundry and select Add. Follow any instance-creation prompts shown by Teams.")
+    print("4. Open the agent chat to start using Hermes. Reuse your existing instance if you already created one.")
+    print("If Built for your org is not shown, search for Hermes Agent on Foundry in Apps.")
+    print("If Hermes is missing, refresh Teams after waiting and ask your administrator to check your selected audience and Teams app policy.")
+
+
 def verify_instance_identity(state):
     upn = state.get("instance_upn")
     if not upn:
@@ -315,11 +329,15 @@ def verify_instance(state):
     print("Alternatively: https://teams.microsoft.com/ > Apps > Agents for your team > Hermes Agent on Foundry")
     print("> Create instance, using an employee in the approved hiring scope.")
     print("Reuse an existing instance from THIS blueprint when resuming; do not create duplicates.")
-    print("Microsoft performs Agent User/license/workload provisioning. Allow a few minutes for Teams visibility.")
+    teams_access_guide()
     print("If unavailable: check hiring scope, Frontier seat availability and Requests approval in the same tenant.")
     print("Do not manually create Agent User objects or assign per-instance roles as a workaround.")
     verify_instance_identity(state)
     confirm("Is the instance visible in its owner's Teams account?")
+    print("If Nous inference is selected, the first message returns sign-in instructions without using a model.")
+    print("Send /portal login in a one-to-one chat, approve in your browser, then send /portal status.")
+    print("If allowed, /provider azure-foundry switches to Foundry; /model lists permitted deployments.")
+    print("A sign-in/setup response alone does not pass the chat test below; verify a model-generated reply.")
     checks = [
         ("chat", 'Send "Hello, introduce yourself" in its Teams chat; verify a real text reply, not only a progress message.'),
         ("onedrive", 'Ask it to create a uniquely named installation-test text file without overwriting existing files, read it back, then delete only that test file.'),
@@ -345,6 +363,7 @@ def verify_instance(state):
     state["phase"] = "complete"
     save(state)
     print("Installation checks complete. Runtime configuration verified by API; Teams/OneDrive/email confirmed by the operator.")
+    teams_access_guide()
     print("Routine outcome (operator reported): " + routine_result + ". This is not an automated execution test.")
 
 
@@ -521,6 +540,32 @@ def bind_bot(blueprint, bot, access_token):
         raise RuntimeError("Bot configuration readback mismatch. Review before retrying.")
 
 
+def confirm_project_reuse(state):
+    """Confirm reuse of the existing project identified by this azd environment."""
+    values = env_values(state['environment'])
+    account, project = values.get('ACCOUNT'), values.get('PROJECT')
+    if not account or not project:
+        return  # A new environment has no previously provisioned project outputs.
+    projects = json.loads(command('az', 'resource', 'list', '--subscription', state['subscription'],
+                                  '--resource-type', 'Microsoft.CognitiveServices/accounts/projects',
+                                  '-o', 'json'))
+    matches = [item for item in projects if item.get('name', '').lower() == f'{account}/{project}'.lower()]
+    if not matches:
+        return
+    if len(matches) != 1:
+        raise RuntimeError('Multiple matching Foundry projects found. Review the saved environment target before continuing.')
+    resource_id = matches[0]['id']
+    if state.get('reuse_project_confirmed') == resource_id:
+        return
+    print(f"Existing Foundry project found: {account}/{project}")
+    print(f"Resource: {resource_id}")
+    print('Reuse keeps this project and its identity. Setup updates infrastructure in place; '
+          'with --force it also rebuilds and reinstalls the Hermes application.')
+    confirm('Reuse this existing Foundry project for this deployment?')
+    state['reuse_project_confirmed'] = resource_id
+    save(state)
+
+
 def run(state):
     if state["phase"] == "complete":
         if state.get("runtime_verified") and state.get("operator_checks"):
@@ -529,7 +574,8 @@ def run(state):
                 raise RuntimeError("Previously completed installation is no longer approved/enabled. "
                                    "No automatic reactivation: review the administrator's lifecycle decision.")
             check_route(state, agent)
-            print("Runtime still enabled. Prior operator delivery checks are saved, not repeated live tests.")
+            print("SETUP ALREADY COMPLETE: publication, Teams connection, and runtime were verified. No setup action is required. Prior operator delivery checks are saved, not repeated live tests.")
+            teams_access_guide()
             return
         print("Older checkpoint verified Bot Based routing only. Runtime and first-instance checks are still required.")
         state["phase"] = "enable_runtime"
@@ -537,22 +583,33 @@ def run(state):
     if state["phase"] == "prerequisites":
         prerequisites(state)
     if state["phase"] == "provisioning":
-        result = subprocess.run(["azd", "provision", "--environment", state["environment"]], cwd=ROOT)
+        confirm_project_reuse(state)
+        provision_env = dict(os.environ)
+        provision_env["HERMES_FORCE_REDEPLOY"] = "true" if state.get("force_redeploy") else "false"
+        provision_env["HERMES_DEPLOY_RUN_ID"] = state["run_id"]
+        result = subprocess.run(["azd", "provision", "--environment", state["environment"]],
+                                cwd=ROOT, env=provision_env)
         if result.returncode:
             raise RuntimeError("Provisioning stopped. Run ./setup.sh --continue to retry the resumable provisioning phase.")
         deployment(state)  # Catch the post-hook's intentional identity-mismatch early exit.
         state["phase"] = "awaiting_approval"
         save(state)
     if state["phase"] == "awaiting_approval":
-        print("\nAPPROVE HERMES IN MICROSOFT 365", flush=True)
-        print("Open: https://admin.cloud.microsoft/#/agents/all/requested", flush=True)
-        print("Select Hermes Agent on Foundry. Review permissions/hiring scope and approve the request.", flush=True)
-        print("It can take about 5 minutes to appear; in rare cases a few hours. These are observed delays, not an SLA.", flush=True)
-        print("If shown separately, enable/activate the blueprint at https://admin.cloud.microsoft/#/agents/all", flush=True)
-        print("You can stop here and run ./setup.sh --continue later; Azure provisioning will not repeat.", flush=True)
-        pause("After accepting the request, press [Enter] to continue: ")
-        if not approved(deployment(state)):
-            raise RuntimeError("Microsoft has not reported approval yet. Wait and rerun ./setup.sh --continue; no bot changes made.")
+        if approved(deployment(state)):
+            print("DONE: Microsoft reports the blueprint approved. Publish to Store is already complete; no publication action is needed.", flush=True)
+        else:
+            print("\nPUBLISH HERMES TO STORE IN MICROSOFT 365", flush=True)
+            print("Open: https://admin.cloud.microsoft/#/agents/all/requested", flush=True)
+            print("Select Hermes Agent on Foundry. Review permissions/hiring scope and select Publish to Store.", flush=True)
+            print('Under "Activate (optional)" > "Select users who can create agent instances", choose None / All / Specific.', flush=True)
+            print('None selects no users; All selects all users; Specific selects users/groups for a pilot. This does not create an instance.', flush=True)
+            print("It can take about 5 minutes to appear; in rare cases a few hours. These are observed delays, not an SLA.", flush=True)
+            print("You can stop here and run ./setup.sh --continue later; Azure provisioning will not repeat.", flush=True)
+            print("After Publish to Store finishes, return to this terminal. Publication makes Hermes available; setup must still connect Teams messages to the deployed agent and verify its endpoint.", flush=True)
+            print("Press Enter below, then follow the Microsoft sign-in prompt. Keep this terminal open until setup asks you to create an instance.", flush=True)
+            pause("After Publish to Store finishes, press [Enter] here to configure the Teams connection: ")
+            if not approved(deployment(state)):
+                raise RuntimeError("Microsoft has not reported approval yet. Wait and rerun ./setup.sh --continue; no bot changes made.")
         state["phase"] = "configure_bot"
         save(state)
     if state["phase"] == "configure_bot":
@@ -561,10 +618,11 @@ def run(state):
             save(state)
             raise RuntimeError("Blueprint approval is no longer effective. Review Requests and run ./setup.sh --continue.")
         ensure_msal()
-        print("\nConfigure Bot Based routing using Microsoft Graph (beta).", flush=True)
+        print("\nConnect Teams messages to your deployed Hermes agent.", flush=True)
+        print("Setup configures and verifies the connection automatically. Follow the Microsoft browser sign-in prompt; no manual Bot ID entry is needed.", flush=True)
         print("This creates/reuses a tenant-owned setup app with one delegated permission:", SCOPE, flush=True)
         print("Consent is for the signed-in administrator only. No application permissions, secrets, or agent roles are added.", flush=True)
-        pause("Press [Enter] to authorize this setup step, or Ctrl+C to pause: ")
+        pause("Press [Enter] to start the Microsoft sign-in for the Teams connection, or Ctrl+C to pause: ")
         admin_token = token(state["tenant"], GRAPH)
         user = guid(request(graph_path("me", {"$select": "id"}), admin_token)["id"])
         client = setup_client(state, admin_token, user)
@@ -584,11 +642,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--continue", dest="resume", action="store_true")
     parser.add_argument("--existing", action="store_true")
+    parser.add_argument("--force", action="store_true")
     parser.add_argument("--field", choices=("tenant", "subscription", "environment"))
     parser.add_argument("--tenant")
     parser.add_argument("--subscription")
     parser.add_argument("--environment")
     args = parser.parse_args()
+    if args.force and (args.resume or args.existing or args.field):
+        parser.error("--force cannot be combined with --continue, --existing, or --field")
     if args.field:
         print(load()[args.field])
         return
@@ -610,12 +671,20 @@ def start_or_resume(args):
     if args.resume:
         state = load()
     else:
-        if STATE.exists():
-            raise RuntimeError("Saved installation exists. Run ./setup.sh --continue.")
+        if STATE.exists() and not getattr(args, "force", False):
+            raise RuntimeError("Saved installation exists. Run ./deploy.sh --continue to resume, or "
+                               "./deploy.sh --force to reinstall infrastructure and the app, preserving identity/data.")
         if not args.environment or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", args.environment):
             raise RuntimeError("A valid azd environment name is required.")
         state = {"schema": 1, "tenant": guid(args.tenant), "subscription": guid(args.subscription),
                  "environment": args.environment, "run_id": str(uuid.uuid4()), "phase": "prerequisites"}
+        state["force_redeploy"] = bool(getattr(args, "force", False))
+        if getattr(args, "force", False) and STATE.exists():
+            archive = STATE.parent / "setup-history"
+            archive.mkdir(mode=0o700, exist_ok=True)
+            backup = archive / ("setup-state-" + str(uuid.uuid4()) + ".json")
+            os.replace(STATE, backup)
+            print(f"Previous checkpoint archived to {backup}. Existing Azure resources remain.", flush=True)
         if getattr(args, "existing", False):
             adopt_existing(state)
         save(state)

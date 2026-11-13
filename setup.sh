@@ -4,9 +4,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROVISION_MODE="apply"
+FORCE_ARGS=()
 
 case "${1:-}" in
   "") ;;
+  --force) FORCE_ARGS=(--force) ;;
   --preview) PROVISION_MODE="preview" ;;
   --validate) PROVISION_MODE="validate" ;;
   --auth-only) PROVISION_MODE="auth-only" ;;
@@ -14,8 +16,9 @@ case "${1:-}" in
   --existing) PROVISION_MODE="existing" ;;
   -h|--help)
     printf '%s\n' \
-      "Usage: ./setup.sh [--continue|--existing|--preview|--validate|--auth-only]" \
+      "Usage: ./setup.sh [--continue|--force|--existing|--preview|--validate|--auth-only]" \
       "  no option    Guided prerequisites, Azure deployment, approval, bot routing, activation and testing." \
+      "  --force      Reinstall: reprovision infrastructure, rebuild and activate the app; preserve identity/data." \
       "  --continue   Resume the saved installation at its next required step." \
       "  --existing   Verify/adopt an existing deployment, without provisioning infrastructure." \
       "  --preview    Show the Azure resource plan without creating anything." \
@@ -163,7 +166,7 @@ login_with_azure_cli() {
 
 select_customer_tenant() {
   local rows=()
-  local row existing_row tenant_id tenant_name account_name choice choice_number other_choice i duplicate
+  local row existing_row tenant_id tenant_name account_name choice choice_number other_choice i duplicate account_rows
 
   while true; do
     if ! az account show >/dev/null 2>&1; then
@@ -171,6 +174,9 @@ select_customer_tenant() {
       login_with_azure_cli
     fi
 
+    account_rows=$(az account list --all \
+      --query "[?state=='Enabled'].join('|', [tenantId, tenantDisplayName || 'Unnamed tenant', user.name || 'Unknown account'])" \
+      --output tsv) || fail "Could not list Azure tenants. Check the Azure CLI error above and retry."
     rows=()
     while IFS= read -r row; do
       [[ -n "$row" ]] || continue
@@ -185,9 +191,7 @@ select_customer_tenant() {
         fi
       done
       [[ "$duplicate" == true ]] || rows+=("$row")
-    done < <(az account list --all \
-      --query "[?state=='Enabled'].join('|', [tenantId, tenantDisplayName, user.name])" \
-      --output tsv)
+    done <<< "$account_rows"
 
     info "Choose the customer tenant and administrator identity:"
     i=1
@@ -246,13 +250,14 @@ ensure_azure_login() {
 
 select_customer_subscription() {
   local rows=()
-  local row subscription_id subscription_name choice choice_number i
+  local row subscription_id subscription_name choice choice_number i account_rows
 
+  account_rows=$(az account list --all \
+    --query "[?tenantId=='${CUSTOMER_TENANT_ID}' && state=='Enabled'].join('|', [id, name || 'Unnamed subscription'])" \
+    --output tsv) || fail "Could not list Azure subscriptions. Check the Azure CLI error above and retry."
   while IFS= read -r row; do
     [[ -n "$row" ]] && rows+=("$row")
-  done < <(az account list --all \
-    --query "[?tenantId=='${CUSTOMER_TENANT_ID}' && state=='Enabled'].join('|', [id, name])" \
-    --output tsv)
+  done <<< "$account_rows"
 
   ((${#rows[@]} > 0)) || fail "The selected identity has no enabled Azure subscription in this tenant."
 
@@ -319,6 +324,9 @@ prepare_azd_environment() {
   fi
   azd env set AZURE_SUBSCRIPTION_ID "$AZURE_SUBSCRIPTION_ID" >/dev/null 2>&1
   azd env set AZURE_PRINCIPAL_ID "$principal_id" >/dev/null 2>&1
+  if [[ "$PROVISION_MODE" != "auth-only" ]]; then
+    python3 scripts/inference_settings.py --save-azd --interactive
+  fi
 }
 
 main() {
@@ -335,8 +343,8 @@ main() {
     ensure_azure_login
     az account set --subscription "$AZURE_SUBSCRIPTION_ID"
   else
-    if [[ "$PROVISION_MODE" =~ ^(apply|existing)$ && -f deployment-output/setup-state.json ]]; then
-      fail "A saved installation exists. Run ./setup.sh --continue to resume it."
+    if [[ "$PROVISION_MODE" =~ ^(apply|existing)$ && -f deployment-output/setup-state.json && ${#FORCE_ARGS[@]} -eq 0 ]]; then
+      fail "A saved installation exists. Run ./deploy.sh --continue to resume, or ./deploy.sh --force to archive its checkpoint and restart setup. --force rebuilds and activates the app in the selected environment while preserving identity/data."
     fi
     select_customer_tenant
     ensure_azure_login
@@ -394,7 +402,7 @@ main() {
       python3 scripts/tenant_setup.py --existing --tenant "$CUSTOMER_TENANT_ID" \
         --subscription "$AZURE_SUBSCRIPTION_ID" --environment "$environment_name"
     else
-      python3 scripts/tenant_setup.py --tenant "$CUSTOMER_TENANT_ID" \
+      python3 scripts/tenant_setup.py "${FORCE_ARGS[@]}" --tenant "$CUSTOMER_TENANT_ID" \
         --subscription "$AZURE_SUBSCRIPTION_ID" --environment "$environment_name"
     fi
   else

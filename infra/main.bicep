@@ -16,10 +16,10 @@ param location string
 param deploymentPrincipalId string
 
 @description('Initial model deployed for Hermes. More compatible project deployments are discovered at runtime.')
-param modelName string = 'gpt-5-mini'
+param modelName string = 'gpt-6.1-sol'
 
 @description('Version of the initial model deployment.')
-param modelVersion string = '2025-08-07'
+param modelVersion string = '2026-09-29'
 
 @minValue(1)
 @maxValue(1000)
@@ -60,6 +60,11 @@ resource account 'Microsoft.CognitiveServices/accounts@2025-09-01' = {
 
 resource project 'Microsoft.CognitiveServices/accounts/projects@2026-03-01' = {
   parent: account
+  // Cognitive Services serializes child writes on the parent account. Wait for the
+  // model deployment before creating/updating the project to avoid RequestConflict.
+  dependsOn: [
+    initialModel
+  ]
   name: projectName
   location: location
   #disable-next-line BCP187
@@ -170,6 +175,7 @@ module managedAgentBlueprint 'modules/managed-agent-blueprint.bicep' = {
     deploymentIdentityResourceId: deploymentScriptIdentity.outputs.resourceId
     projectEndpoint: foundryProjectEndpoint
     blueprintName: blueprintName
+    agentName: agentName
   }
   dependsOn: [
     deploymentOperatorFoundryUser

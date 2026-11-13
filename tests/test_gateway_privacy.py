@@ -24,6 +24,66 @@ class GatewayPrivacyTests(unittest.TestCase):
     def setUpClass(cls):
         cls.gateway = _load_gateway()
 
+    def test_portal_onboarding_is_procedural_and_offers_only_enabled_fallback(self):
+        from portal_auth import PortalError
+        for allowed, failure in (("nous,azure-foundry", False), ("nous", False), ("nous,azure-foundry", True)):
+            with self.subTest(allowed=allowed, failure=failure):
+                handler = object.__new__(self.gateway.Handler)
+                handler.path = "/v1/chat/completions"
+                handler.headers = {"Authorization": "Bearer gateway-key", "x-agent-graph-token": "graph-token",
+                    "X-Caller-Tier": "owner", "X-Caller-Object-Id": "caller-from-edge",
+                    "X-Access-Tenant": "tenant-from-edge", "X-Access-Agent": "agent-from-edge",
+                    "X-Portal-Interactive": "true"}
+                handler._body = mock.Mock(return_value=json.dumps({"provider": "nous",
+                    "access_confirmation_input": "hello", "messages": [{"role": "user", "content": "hello"}]}).encode())
+                handler._send = mock.Mock()
+                service = mock.Mock()
+                if failure: service.handle.side_effect = PortalError("Sign-in unavailable. Send /portal login again.")
+                else: service.handle.return_value = ("Open https://portal.nousresearch.com/device then send /portal status.", None)
+                with mock.patch.dict(os.environ, {"INFERENCE_PROVIDER": "nous", "INFERENCE_ALLOWED_PROVIDERS": allowed}), \
+                     mock.patch.object(self.gateway, "GATEWAY_KEY", "gateway-key"), \
+                     mock.patch.object(self.gateway, "EncryptedStore") as store, \
+                     mock.patch.object(self.gateway, "PortalAuth", return_value=service), \
+                     mock.patch.object(self.gateway.urllib.request, "urlopen") as upstream:
+                    handler.do_POST()
+                    upstream.assert_not_called()
+                response = json.loads(handler._send.call_args.args[1])["choices"][0]["message"]["content"]
+                self.assertEqual("/provider azure-foundry" in response, "azure-foundry" in allowed)
+                self.assertIn("/portal", response)
+                self.assertEqual(store.call_args.args[2]["caller"], "caller-from-edge")
+                self.assertIsNone(self.gateway._portal_credentials)
+
+    def test_group_chat_portal_command_never_starts_device_authorization(self):
+        handler = object.__new__(self.gateway.Handler)
+        handler.path = "/v1/chat/completions"
+        handler.headers = {"Authorization": "Bearer gateway-key", "X-Portal-Interactive": "false"}
+        handler._body = mock.Mock(return_value=b'{"provider":"nous","access_confirmation_input":"/portal login"}')
+        handler._send = mock.Mock()
+        with mock.patch.dict(os.environ, {"INFERENCE_ALLOWED_PROVIDERS": "nous"}), \
+             mock.patch.object(self.gateway, "GATEWAY_KEY", "gateway-key"), \
+             mock.patch.object(self.gateway, "PortalAuth") as oauth, \
+             mock.patch.object(self.gateway.urllib.request, "urlopen") as upstream:
+            handler.do_POST()
+        oauth.assert_not_called()
+        upstream.assert_not_called()
+        self.assertIn(b'one-to-one', handler._send.call_args.args[1])
+
+    def test_portal_token_endpoint_requires_auth_and_clears_between_turns(self):
+        handler = object.__new__(self.gateway.Handler)
+        handler.path = "/v1/portal-token"
+        handler.headers = {}
+        handler._send = mock.Mock()
+        with mock.patch.object(self.gateway, "GATEWAY_KEY", "gateway-key"):
+            self.gateway._portal_credentials = {"api_key": "alice-token"}
+            handler.do_GET()
+            self.assertEqual(handler._send.call_args.args[0], 401)
+            handler.headers = {"Authorization": "Bearer gateway-key"}
+            handler.do_GET()
+            self.assertIn(b'alice-token', handler._send.call_args.args[1])
+            self.gateway._clear_turn_authority()
+            handler.do_GET()
+            self.assertEqual(handler._send.call_args.args[0], 403)
+
     def test_redactor_removes_credentials_tenant_and_user_identifiers(self):
         jwt = "eyJ" + "header.payload.signature"
         guid = "9f0c" + "8a01-2b7d-4c39-8a11-123456789abc"

@@ -37,12 +37,47 @@ def config(kind="apiBased"):
 
 class TenantSetupTests(unittest.TestCase):
     def setUp(self):
+        reuse = patch.object(setup, "confirm_project_reuse")
+        reuse.start()
+        self.addCleanup(reuse.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.state_path = Path(self.temp.name) / "setup-state.json"
         self.patcher = patch.object(setup, "STATE", self.state_path)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
+
+    def test_force_archives_checkpoint_and_restarts_at_prerequisites(self):
+        setup.save(state("verify_instance"))
+        before = self.state_path.read_bytes()
+        args = types.SimpleNamespace(resume=False, force=True, existing=False,
+                                     environment="example", tenant=TENANT, subscription=TENANT)
+        with patch.object(setup, "run") as run:
+            setup.start_or_resume(args)
+        backups = list((self.state_path.parent / "setup-history").glob("*.json"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), before)
+        self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
+        self.assertEqual(setup.load()["phase"], "prerequisites")
+        self.assertTrue(setup.load()["force_redeploy"])
+        self.assertNotEqual(setup.load()["run_id"], USER)
+        run.assert_called_once()
+
+    def test_force_validates_new_target_before_archiving(self):
+        setup.save(state())
+        args = types.SimpleNamespace(resume=False, force=True, environment="../bad",
+                                     tenant=TENANT, subscription=TENANT)
+        with self.assertRaises(RuntimeError):
+            setup.start_or_resume(args)
+        self.assertEqual(setup.load(), state())
+        self.assertFalse((self.state_path.parent / "setup-history").exists())
+
+    def test_saved_checkpoint_error_explains_force(self):
+        setup.save(state())
+        args = types.SimpleNamespace(resume=False, force=False)
+        with self.assertRaisesRegex(RuntimeError, "--force"):
+            setup.start_or_resume(args)
+        self.assertEqual(setup.load(), state())
 
     def test_checkpoint_private_and_roundtrips(self):
         setup.save(state())
@@ -73,6 +108,19 @@ class TenantSetupTests(unittest.TestCase):
                 setup.run(data)
         client.assert_not_called(); process.assert_not_called()
         self.assertEqual(data["phase"], "awaiting_approval")
+
+    def test_approved_publication_skips_publication_prompt(self):
+        data = state()
+        agent = {"agent_endpoint": {"publish_approval_status": "approved"}}
+        with patch.object(setup, "deployment", return_value=agent), \
+             patch.object(setup, "pause") as pause, \
+             patch.object(setup, "ensure_msal", side_effect=RuntimeError("next phase")), \
+             patch("builtins.print") as output:
+            with self.assertRaisesRegex(RuntimeError, "next phase"):
+                setup.run(data)
+        pause.assert_not_called()
+        self.assertEqual("configure_bot", data["phase"])
+        self.assertTrue(any("no publication action is needed" in str(call) for call in output.call_args_list))
 
     def test_provision_failure_retains_phase(self):
         data = state("provisioning")
@@ -439,6 +487,7 @@ class TenantSetupTests(unittest.TestCase):
         result = subprocess.run(["bash", str(ROOT / "setup.sh"), "--help"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0)
         self.assertIn("--continue", result.stdout)
+        self.assertIn("--force", result.stdout)
 
 
 class BrowserAuthenticationTests(unittest.TestCase):
@@ -560,3 +609,32 @@ class BrowserAuthenticationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProjectReuseTests(unittest.TestCase):
+    def test_confirmation_is_saved_and_not_repeated(self):
+        data = state('provisioning')
+        with patch.object(setup, 'env_values', return_value={'ACCOUNT': 'acct', 'PROJECT': 'proj'}), \
+             patch.object(setup, 'command', return_value=json.dumps([{'name': 'acct/proj', 'id': '/project-id'}])), \
+             patch.object(setup, 'confirm') as confirm, patch.object(setup, 'save') as save:
+            setup.confirm_project_reuse(data)
+            setup.confirm_project_reuse(data)
+        confirm.assert_called_once()
+        save.assert_called_once()
+        self.assertEqual(data['reuse_project_confirmed'], '/project-id')
+
+    def test_decline_leaves_provisioning_checkpoint_unchanged(self):
+        data = state('provisioning')
+        with patch.object(setup, 'env_values', return_value={'ACCOUNT': 'acct', 'PROJECT': 'proj'}), \
+             patch.object(setup, 'command', return_value=json.dumps([{'name': 'acct/proj', 'id': '/project-id'}])), \
+             patch.object(setup, 'confirm', side_effect=RuntimeError('Not confirmed')), \
+             patch.object(setup, 'save') as save:
+            with self.assertRaisesRegex(RuntimeError, 'Not confirmed'):
+                setup.confirm_project_reuse(data)
+        save.assert_not_called()
+        self.assertNotIn('reuse_project_confirmed', data)
+
+    def test_new_environment_does_not_prompt(self):
+        with patch.object(setup, 'env_values', return_value={}), patch.object(setup, 'confirm') as confirm:
+            setup.confirm_project_reuse(state('provisioning'))
+        confirm.assert_not_called()

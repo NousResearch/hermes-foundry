@@ -10,6 +10,12 @@
     },
     "deploymentPrincipalId": {
       "value": "${AZURE_PRINCIPAL_ID}"
+    },
+    "modelName": {
+      "value": "${FOUNDRY_MODEL_NAME}"
+    },
+    "modelVersion": {
+      "value": "${FOUNDRY_MODEL_VERSION}"
     }
   }
 }

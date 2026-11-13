@@ -20,6 +20,8 @@ class VersionRoutingTests(unittest.TestCase):
         target="8",
         target_logic="HermesRouter",
         patch_behavior="success",
+        version_states="active",
+        concurrent_route="",
     ):
         def agent(version):
             return {
@@ -79,7 +81,19 @@ class VersionRoutingTests(unittest.TestCase):
                 done
                 case "$*" in
                   *"/agents/hermes-agent-on-foundry/versions/{target}?api-version=v1"*)
-                    cat "$FIXTURES/version.json" ;;
+                    python3 - "$FIXTURES/version.json" "$FIXTURES/version-count" <<'PYVER'
+import json, os, pathlib, sys
+count = pathlib.Path(sys.argv[2])
+n = int(count.read_text()) if count.exists() else 0
+states = os.environ['VERSION_STATES'].split(',')
+data = json.load(open(sys.argv[1]))
+data['status'] = states[min(n, len(states) - 1)]
+count.write_text(str(n + 1))
+if os.environ.get('CONCURRENT_ROUTE'):
+    pathlib.Path(os.environ['STATE_FILE']).write_text(os.environ['CONCURRENT_ROUTE'])
+print(json.dumps(data))
+PYVER
+                    ;;
                   *"inheritablePermissions"*) cat "$FIXTURES/inheritance.json" ;;
                   *"/agents/hermes-agent-on-foundry?api-version=v1"*)
                     if [ "$method" = "PATCH" ]; then
@@ -100,7 +114,7 @@ PY
                     fi ;;
                   *) printf 'unexpected az call: %s\\n' "$*" >&2; exit 9 ;;
                 esac
-            """))
+            """).lstrip())
             fake_az.chmod(fake_az.stat().st_mode | stat.S_IXUSR)
             environment = dict(os.environ)
             environment.update({
@@ -109,6 +123,10 @@ PY
                 "STATE_FILE": str(state),
                 "FIXTURES": str(fixtures),
                 "PATCH_BEHAVIOR": patch_behavior,
+                "VERSION_STATES": version_states,
+                "CONCURRENT_ROUTE": concurrent_route,
+                "HERMES_READY_TIMEOUT": "0.2",
+                "HERMES_READY_POLL_INTERVAL": "0.01",
             })
             result = subprocess.run([
                 "bash", str(ROOT / "scripts/route-agent-version.sh"),
@@ -158,8 +176,31 @@ PY
 
         self.assertNotEqual(0, result.returncode)
         self.assertEqual("7", state)
-        self.assertIn("Do not retry without refreshing state", result.stderr)
+        self.assertIn("Timed out waiting", result.stderr)
         self.assertEqual(1, calls.count("--method PATCH"))
+
+    def test_waits_for_creating_version_then_routes(self):
+        result, calls, state = self.run_router(version_states='creating,creating,active')
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual('8', state)
+        self.assertEqual(1, calls.count('--method PATCH'))
+
+    def test_terminal_version_failure_does_not_route(self):
+        result, calls, state = self.run_router(version_states='failed')
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn('--method PATCH', calls)
+
+    def test_already_routed_resume_validates_without_patch(self):
+        result, calls, state = self.run_router(current='8')
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn('--method PATCH', calls)
+        self.assertIn('already serving', result.stdout)
+
+    def test_route_changes_during_readiness_wait_are_not_overwritten(self):
+        result, calls, state = self.run_router(concurrent_route='9')
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual('9', state)
+        self.assertNotIn('--method PATCH', calls)
 
 
 if __name__ == "__main__":

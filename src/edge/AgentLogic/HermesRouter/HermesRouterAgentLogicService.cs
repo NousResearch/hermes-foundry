@@ -1387,7 +1387,14 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
     {
         if (string.IsNullOrEmpty(_routerUrl)) return "The gateway isn't configured.";
 
-        var modelSelection = _modelPolicy is null
+        // Portal onboarding is a gateway control operation, independent of model discovery/auth.
+        var controlText = System.Text.RegularExpressions.Regex.Replace(
+            turnContext?.Activity?.Text ?? "", @"<at>.*?</at>", "",
+            System.Text.RegularExpressions.RegexOptions.Singleline).Trim();
+        var portalControl = System.Text.RegularExpressions.Regex.IsMatch(
+            controlText, @"^/portal(?:\s+(?:login|status|logout))?$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var modelSelection = _modelPolicy is null || portalControl
             ? null
             : await _modelPolicy.ResolveAsync(sessionKey, ct);
         if (modelSelection is not null)
@@ -1407,7 +1414,7 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
             // bare model values from generic OpenAI clients unless direct_model_requests is enabled,
             // but always honors an explicit provider + model pair.
             model = modelSelection?.Model ?? "hermes-agent",
-            provider = modelSelection is null ? null : "azure-foundry",
+            provider = modelSelection?.Provider,
             messages = new[] { new { role = "user", content = prompt } },
             access_confirmation_input = turnContext?.Activity?.Text
         });
@@ -1522,6 +1529,11 @@ public sealed class HermesRouterAgentLogicService : IAgentLogicService
         // No turn (a routine) means no identified caller and therefore outsider.
         var callerTier = turnContext != null ? CallerOf(turnContext).tier : "outsider";
         req.Headers.TryAddWithoutValidation("X-Caller-Tier", callerTier);
+        req.Headers.TryAddWithoutValidation("X-Portal-Interactive",
+            turnContext != null
+            && string.Equals(turnContext.Activity.ChannelId, Channels.Msteams, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(turnContext.Activity.Conversation?.ConversationType, "personal", StringComparison.OrdinalIgnoreCase)
+                ? "true" : "false");
         if (turnContext != null)
         {
             req.Headers.TryAddWithoutValidation("X-Caller-Object-Id", CallerOf(turnContext).oid ?? "");

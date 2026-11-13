@@ -26,6 +26,65 @@ publishing a new blueprint or assigning roles. If old azd blueprint/bot outputs 
 warns explicitly and preserves them; the confirmed live target is saved only in the private setup
 checkpoint. Later runs use `--continue`. This is not a migration of the old Bicep environment.
 
+### Reinstalling an existing application
+
+To reinstall the current application into the selected azd environment, run:
+
+```sh
+./deploy.sh --force
+```
+
+`./setup.sh --force` is equivalent. The installer archives the previous checkpoint
+under the ignored `deployment-output/setup-history/` directory, prompts for settings,
+and reprovisions the infrastructure. If the agent already exists with the matching
+blueprint, it rebuilds the current source, creates a replacement version with the
+configured inference/egress settings, verifies it, and **switches live traffic to it**.
+The previous version is retained for rollback. If the agent is absent, setup creates it.
+It then continues publication, permission reconciliation, and guided acceptance.
+
+This is an in-place reinstall: identities, existing instances, and stored data are
+preserved. It does not delete the resource group, buy licenses, or recreate tenant
+accounts. A mismatched identity stops the reinstall; it cannot silently replace an
+unrelated blueprint. Select the azd environment belonging to the app you intend to
+reinstall. This does not automatically upgrade every Hermes app in the tenant.
+
+The archive is private; do not commit it. The installer lock prevents replacing an
+active installer's checkpoint. Normal provisioning/approval checks still apply.
+After interruption use `./deploy.sh --continue`; the checkpoint retains reinstall
+intent. A retry during provisioning may build another version; old versions remain.
+Use `build.sh` and `new-version.sh` if you want a separately reviewed image update
+without automatic activation. Do not combine `--force` with other setup modes.
+
+### Choose inference during setup
+
+For a new installation, `./deploy.sh` asks whether Hermes should use Nous portal
+inference or Azure Foundry, and which providers employees may select. Nous is the
+new-install default. Choose the Nous model; when Foundry is enabled, choose its
+Azure model too; its catalog version is resolved automatically. No shared portal credential is requested.
+Each employee sends `/portal login` in a one-to-one Teams chat, signs into their
+own Nous account in the browser, then sends `/portal status`. They can disconnect
+with `/portal logout`. The Agent User needs working OneDrive access to retain
+these encrypted, isolated sessions across restarts.
+
+**The deployment script creates and attaches the required portal egress policy.**
+It also adds exact hostname rules to an existing Foundry managed-network firewall
+when required, and verifies the saved configuration. You do not create a firewall
+policy manually or copy a policy ID. This does not configure customer-managed VNet
+firewalls. Existing deployments change through `new-version.sh`, not `--existing`.
+See the [operator setup details](ADVANCED_TENANT_DEPLOYMENT.md#inference-and-outbound-access-during-setup).
+
+Once the agent is running, employees can use:
+
+- `/provider` to see their current provider and the enabled choices;
+- `/provider nous` or `/provider azure-foundry` to switch within the admin allowlist;
+- `/provider default` to restore the administrator's default;
+- `/model` to list permitted models, then `/model <model-id>` to select one.
+
+These commands change the caller's conversation, not fleet credentials, firewall
+rules, or scheduled routines. Routines use the administrator's defaults. Portal
+inference uses each signed-in user's own portal billing identity and does not
+register each instance as a portal-managed Hermes Cloud machine.
+
 ### Guided installation sequence
 
 | Stage | Script / administrator action |
@@ -230,17 +289,16 @@ prepared; use the advanced deployment guide rather than trying to create identit
 
 ## Step 5: review permissions, grant consent, and activate Hermes
 
-Use the Microsoft publication wizard for **Hermes Agent on Foundry**.
+Select **Hermes Agent on Foundry** in [Agents > Requests](https://admin.cloud.microsoft/#/agents/all/requested) and choose **Publish to Store** to open the Microsoft publication wizard.
 
 1. Confirm the agent name, publisher, description, icon, and declared capabilities.
 2. Enable the Microsoft 365 host products required by the organization, including Teams.
-3. Set **Hiring scope**:
-   - choose **Specific users or groups** for a controlled pilot;
-   - choose **All users** only when every employee should be allowed to create an instance; or
-   - choose **None** to disable employee self-service. Because the administrator-side Create
-     Instance UI is still a preview surface and is not covered by Microsoft's current public
-     step-by-step guide, verify that the tenant exposes the required IT-led creation path before
-     making this the rollout policy.
+3. Under **Activate (optional)**, use **Select users who can create agent instances**:
+   - **None**: no users are selected to create agent instances.
+   - **All**: all users are selected to create agent instances.
+   - **Specific**: select the users or groups who can create agent instances (use this for a controlled pilot).
+   This is the instance-creation audience, also referred to as the hiring scope. Selecting an
+   audience does not itself create an agent instance.
 4. Apply the organization's Agent 365 policy template, if one is configured.
 5. On **Accept permissions**, review the requested Microsoft Graph permissions listed below.
 6. Select **Grant admin consent**. Sign in again as the Global Administrator if Microsoft prompts.
@@ -288,7 +346,7 @@ instance. A wrong or missing binding can prevent message delivery. This does not
 Create/Add instance spinner is caused by the binding, or that API Based is unsupported for all
 Microsoft agents.
 
-**When the deployment operator uses `./setup.sh`:** after you approve/activate the request, they
+**When the deployment operator uses `./setup.sh`:** after you complete **Publish to Store**, they
 press **Enter** at its approval prompt, or run `./setup.sh --continue`. Setup verifies the approved
 state and offers to configure the binding automatically. It creates/reuses a tenant-owned setup
 application with one delegated Graph permission, `AgentCommunicationConfiguration.ReadWrite`,
@@ -468,3 +526,81 @@ that preparation; it includes the subsequent portal approval, activation and acc
 For that one-time technical preparation, use
 [ADVANCED_TENANT_DEPLOYMENT.md](ADVANCED_TENANT_DEPLOYMENT.md). For updating an already deployed
 runtime, use [DEPLOYMENT.md](DEPLOYMENT.md).
+
+
+Model input formats in setup:
+
+| Input | Format examples | Automatic normalization |
+| --- | --- | --- |
+| Default Nous portal model | `openai/gpt-6.1-sol`, `openai/gpt-5-mini`, `openai/gpt-4.1` | Bare GPT and o-series names receive `openai/`. Other IDs retain their exact provider/name. |
+| Additional Nous models | `openai/gpt-6.1-sol`, `openai/gpt-5-mini`, `openai/gpt-4.1` | Enter a comma-separated list; each item is normalized and duplicates are removed. |
+| Foundry OpenAI model | `gpt-6.1-sol`, `gpt-5-mini`, `gpt-4.1` | An optional `openai/` prefix is removed. Other provider prefixes are rejected by this OpenAI deployment flow. |
+
+These examples illustrate format, not guaranteed availability in every account or
+region. The portal uses provider-qualified IDs to identify the upstream provider;
+Azure's deployment already specifies OpenAI separately. You can enter
+`gpt-6.1-sol` or `openai/gpt-6.1-sol` in either model field.
+
+
+When the selected azd environment identifies an existing Foundry project, setup
+asks whether to reuse it before provisioning. Accepting updates that project in
+place and preserves its identity; `--force` still rebuilds and reinstalls Hermes.
+Declining pauses safely. The choice is saved for this installation so
+`./setup.sh --continue` does not repeat the confirmation. Project and model
+updates are serialized to avoid concurrent writes to the parent Foundry account.
+
+On reprovisioning, the blueprint deployment step first reads the hosted agent.
+If it exists, setup reuses its bound blueprint client ID for the bot, publication,
+and role automation. It creates a blueprint only when the agent lookup returns
+404; permission and service failures stop setup. An unrelated blueprint created
+by an earlier attempt is not automatically deleted.
+
+
+Resuming a forced reinstall preserves completed work. A private checkpoint under
+`deployment-output/reinstalls/` records the build inputs, image, rollback version,
+and created version. Setup waits up to ten minutes for version readiness, validates
+its requested definition, then rechecks the serving route before switching. If the
+target is already serving, it validates without sending another PATCH. A lost create
+response is reconciled against existing versions; ambiguous results are never blindly
+reposted. Changed build inputs require a new `./deploy.sh --force` run.
+
+`./setup.sh --continue` reuses the recorded build and version. Publication completion
+is also recorded; an uncertain publication requires inspecting Microsoft 365 Requests
+before resubmission. Graph and egress configuration use bounded readback waits without
+repeating their writes. `HERMES_READY_TIMEOUT` and `HERMES_READY_POLL_INTERVAL` override
+the default 600-second readiness timeout and five-second polling interval.
+
+Routine RBAC automation uses a deterministic Logic App name derived from the selected project resource ID and Agent Identity Blueprint ID. A matching legacy installation is reused; a legacy workflow for a different target is left intact and a separate workflow is created. Removal discovers the same name automatically. An explicit `--workflow-name` must still match the requested target. Tenant, subscription, project, and blueprint IDs come from the selected environment and Azure responses; no existing customer IDs are required for a new tenant.
+
+### Continue after Publish to Store
+
+Wait until **Publish to Store** finishes. Publication makes Hermes available to the selected
+users; setup must still configure where Teams sends their messages and verify the hosted endpoint.
+
+1. Return to the terminal in this repository folder. If setup is waiting at **After Publish to
+   Store finishes**, press **Enter**. If the command exited, run `./setup.sh --continue`.
+   Completed provisioning will not repeat.
+2. At **Press [Enter] to start the Microsoft sign-in**, press **Enter**.
+3. Open the sign-in link printed by setup on the same computer. Sign in as the administrator
+   for the deployment tenant and complete the requested consent and MFA.
+4. Keep the terminal open. Setup saves and verifies the Teams connection automatically, then
+   checks the hosted endpoint. Follow its remaining prompts; create an instance when setup asks.
+
+The resume command requires the saved setup checkpoint. For an installation made directly with
+`azd` without that checkpoint, use the manual connection procedure in the tenant administrator guide.
+
+### Find Hermes in Teams after setup
+
+After publication and successful connection checks, **Hermes Agent on Foundry** should become
+available in Teams within a few minutes. Microsoft-side provisioning sometimes takes up to a
+few hours; this is an observed delay, not a guaranteed deadline.
+
+1. Open Teams and switch to the organization where Hermes was installed.
+2. Select **Apps > Built for your org** and search for **Hermes Agent on Foundry**.
+3. Open its card and select **Add**. Follow any instance-creation prompts shown by Teams.
+4. Open the agent chat. Reuse your existing instance if you already created one.
+
+If **Built for your org** is not displayed, search in **Apps**. If Hermes is missing, wait and
+refresh Teams, then ask the administrator to check the selected audience and Teams app policy.
+Microsoft documents the organization app category in
+[Find apps in Teams](https://support.microsoft.com/en-us/teams/apps-service/find-teams-and-personal-apps-in-microsoft-teams).

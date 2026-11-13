@@ -32,6 +32,7 @@ ACCOUNT=""
 PROJECT=""
 BLUEPRINT_CLIENT_ID=""
 WORKFLOW_NAME="hermes-agent-foundry-role-sync"
+WORKFLOW_EXPLICIT=false
 LOCATION=""
 POLL_MINUTES="5"
 INCLUDE_EXISTING="false"
@@ -42,7 +43,7 @@ while (($#)); do
     --account) ACCOUNT="${2:?}"; shift 2 ;;
     --project) PROJECT="${2:?}"; shift 2 ;;
     --blueprint-client-id) BLUEPRINT_CLIENT_ID="${2:?}"; shift 2 ;;
-    --workflow-name) WORKFLOW_NAME="${2:?}"; shift 2 ;;
+    --workflow-name) WORKFLOW_NAME="${2:?}"; WORKFLOW_EXPLICIT=true; shift 2 ;;
     --location) LOCATION="${2:?}"; shift 2 ;;
     --poll-minutes) POLL_MINUTES="${2:?}"; shift 2 ;;
     --include-existing) INCLUDE_EXISTING="true"; shift ;;
@@ -118,6 +119,13 @@ if ! az resource list \
     --output json > "$WORK/workflows.json"; then
   echo "ERROR: existing Logic Apps could not be listed. Nothing was deployed or changed." >&2
   exit 1
+fi
+
+if [[ "$WORKFLOW_EXPLICIT" != true ]]; then
+  WORKFLOW_NAME=$(python3 scripts/select_rbac_workflow.py \
+    --project-scope "$PROJECT_SCOPE" --blueprint-id "$BLUEPRINT_CLIENT_ID" \
+    --inventory "$WORK/workflows.json")
+  WORKFLOW_ID="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.Logic/workflows/${WORKFLOW_NAME}"
 fi
 
 EXISTING_WORKFLOW_ID=$(python3 - "$WORK/workflows.json" "$WORKFLOW_NAME" <<'PY'

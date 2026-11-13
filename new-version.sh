@@ -22,10 +22,18 @@
 # one now serving, so the change can be inspected before anyone is exposed to it. Routing is a
 # separate, explicit command, printed at the end.
 set -euo pipefail
+# Explicitly configured inference settings are copied into the new version; credentials are not.
+
 cd "$(dirname "$0")"
 
 # Optional, gitignored per-installation settings. Never commit tenant resource coordinates here.
-[ ! -f .deployment.local ] || source ./.deployment.local
+if [[ "${HERMES_DEPLOY_SKIP_LOCAL_CONFIG:-false}" != "true" && -f .deployment.local ]]; then
+  source ./.deployment.local
+fi
+for inference_setting in RAI_POLICY_ID INFERENCE_PROVIDER INFERENCE_ALLOWED_PROVIDERS NOUS_MODEL NOUS_MODELS NOUS_INFERENCE_BASE_URL; do
+  if declare -p "$inference_setting" >/dev/null 2>&1; then export "$inference_setting"; fi
+done
+
 : "${ACCOUNT:?Set ACCOUNT to the Foundry account name (or add it to .deployment.local)}"
 : "${PROJECT:?Set PROJECT to the Foundry project name (or add it to .deployment.local)}"
 : "${AGENT:?Set AGENT to the hosted agent name (or add it to .deployment.local)}"
@@ -36,13 +44,7 @@ RES="https://ai.azure.com"
 TAG="${1:-}"
 [ -n "$TAG" ] || { echo "usage: $0 <image-tag>   e.g. $0 v19"; exit 1; }
 
-# The full agent deliberately runs the balanced GPT-5.6 model as its primary and the fast model as
-# its real Hermes fallback. Azure Model Router does not yet support the GPT-5.6 family, while Hermes
-# natively fails over after exhausted 429/5xx/auth retries. Keep these overridable for a controlled
-# model migration, but never inherit the old gpt-5-mini value from the serving version.
-PRIMARY_MODEL="${PRIMARY_MODEL:-gpt-5.6-terra}"
-FALLBACK_MODEL="${FALLBACK_MODEL:-gpt-5.6-luna}"
-MODEL_PRIORITY="${MODEL_PRIORITY:-${PRIMARY_MODEL},${FALLBACK_MODEL},gpt-5-mini}"
+# Model choices are explicit overrides or inherited from the serving version below.
 if [ "${MODEL_ALLOWED_DEPLOYMENTS+x}" = x ]; then
   MODEL_ALLOWLIST_MODE="set"
 else
@@ -77,12 +79,34 @@ echo "==> image: $IMAGE"
 CUR=$(az rest --method GET --resource "$RES" \
         --url "${BASE}/agents/${AGENT}?api-version=v1" \
         --query "agent_endpoint.version_selector.version_selection_rules[0].agent_version" -o tsv)
+# Resume a previously accepted create without issuing another POST.
+SAVED_NEW=""
+if [[ -n "${HERMES_VERSION_RESULT_FILE:-}" && -s "$HERMES_VERSION_RESULT_FILE" ]]; then
+  SAVED_FIELDS=$(python3 - "$HERMES_VERSION_RESULT_FILE" "$IMAGE" "$CUR" <<'PYRESUME'
+import json, sys
+record = json.load(open(sys.argv[1]))
+if record.get('image') != sys.argv[2] or sys.argv[3] not in {record.get('previous'), record.get('version')}:
+    raise SystemExit('ABORT: saved version does not match this image or current route')
+if not str(record.get('version', '')).isdigit() or not str(record.get('previous', '')).isdigit():
+    raise SystemExit('ABORT: invalid saved version result')
+print(record['previous'], record['version'])
+PYRESUME
+)
+  read -r CUR SAVED_NEW <<< "$SAVED_FIELDS"
+fi
 echo "==> currently serving version: $CUR  (this is your rollback target)"
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 az rest --method GET --resource "$RES" \
   --url "${BASE}/agents/${AGENT}/versions/${CUR}?api-version=v1" -o json > "$WORK/cur.json"
+
+# Preserve the deployed model choice unless the operator explicitly supplies a replacement.
+PRIMARY_MODEL="${PRIMARY_MODEL:-$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["definition"]["environment_variables"].get("MODEL_DEPLOYMENT_NAME", ""))' "$WORK/cur.json")}"
+FALLBACK_MODEL="${FALLBACK_MODEL:-$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["definition"]["environment_variables"].get("FALLBACK_MODEL_DEPLOYMENT_NAME", ""))' "$WORK/cur.json")}"
+: "${PRIMARY_MODEL:?Select PRIMARY_MODEL for the Foundry deployment}"
+FALLBACK_MODEL="${FALLBACK_MODEL:-$PRIMARY_MODEL}"
+MODEL_PRIORITY="${MODEL_PRIORITY:-${PRIMARY_MODEL},${FALLBACK_MODEL}}"
 
 # A hosted-agent image release must be permission-neutral. It was not always so: on 2026-08-19 the
 # Foundry release workflow reset the blueprint to its default four Graph inheritable scopes. Entra's
@@ -226,6 +250,9 @@ if sys.argv[6] or sys.argv[7]:
         raise SystemExit("Both ROUTINE_CREDENTIAL_VAULT_URI and ROUTINE_CREDENTIAL_CERTIFICATE_NAME are required")
     env["RoutineCredentialVaultUri"] = sys.argv[6]
     env["RoutineCredentialCertificateName"] = sys.argv[7]
+sys.path.insert(0, "scripts")
+from inference_settings import apply
+apply(env)
 body = {
     "definition": {
         "kind": d.get("kind", "hosted"),
@@ -236,6 +263,10 @@ body = {
         "environment_variables": env,
     },
 }
+if d.get("session_configuration"):
+    body["definition"]["session_configuration"] = d["session_configuration"]
+if d.get("rai_config"):
+    body["definition"]["rai_config"] = d["rai_config"]
 # metadata is a SIBLING of definition. Dropping it once cost a version that looked identical and
 # behaved differently, because enableVnextExperience silently went missing.
 if cur.get("metadata"):
@@ -243,21 +274,49 @@ if cur.get("metadata"):
 json.dump(body, sys.stdout)
 PY
 
-echo "==> creating a new version from $CUR (env var VALUES never printed)"
-az rest --method POST --resource "$RES" \
-  --url "${BASE}/agents/${AGENT}/versions?api-version=v1" \
-  --body "@$WORK/body.json" -o json > "$WORK/new.json"
+python3 scripts/configure_inference_egress.py --body "$WORK/body.json" --account "$ACCOUNT"
 
-NEW=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$WORK/new.json")
-echo "==> created version $NEW"
+if [[ -n "$SAVED_NEW" ]]; then
+  NEW="$SAVED_NEW"
+  echo "==> resuming validation of previously created version $NEW"
+else
+  echo "==> creating a new version from $CUR (env var VALUES never printed)"
+  if [[ -n "${HERMES_VERSION_RESULT_FILE:-}" ]]; then
+    python3 - "$HERMES_VERSION_RESULT_FILE.pending" <<'PYPENDING'
+import sys
+from pathlib import Path
+sys.path.insert(0, 'scripts')
+from reinstall_agent import save
+save(Path(sys.argv[1]), {'creation_requested': True})
+PYPENDING
+  fi
+  az rest --method POST --resource "$RES" \
+    --url "${BASE}/agents/${AGENT}/versions?api-version=v1" \
+    --body "@$WORK/body.json" -o json > "$WORK/new.json"
+  NEW=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$WORK/new.json")
+  echo "==> created version $NEW"
+  if [[ -n "${HERMES_VERSION_RESULT_FILE:-}" ]]; then
+    python3 - "$HERMES_VERSION_RESULT_FILE" "$CUR" "$NEW" "$IMAGE" <<'PYSAVE'
+import sys
+from pathlib import Path
+sys.path.insert(0, 'scripts')
+from reinstall_agent import save
+save(Path(sys.argv[1]), dict(previous=sys.argv[2], version=sys.argv[3], image=sys.argv[4], verified=False))
+PYSAVE
+  fi
+fi
 
 # VERIFY BY DIFF before anything is routed to it. A create that silently dropped environment
 # variables would look like a success and fail only at runtime, as an agent that can no longer
 # authenticate — the most expensive kind of failure to diagnose.
-az rest --method GET --resource "$RES" \
-  --url "${BASE}/agents/${AGENT}/versions/${NEW}?api-version=v1" -o json > "$WORK/newfull.json"
+python3 scripts/wait_foundry_state.py \
+  --url "${BASE}/agents/${AGENT}/versions/${NEW}?api-version=v1" --output "$WORK/newfull.json"
+
+python3 scripts/verify_hosted_version.py "$WORK/body.json" "$WORK/newfull.json"
 
 verify_graph_inheritance "$WORK/newfull.json" "new-v$NEW"
+
+python3 scripts/configure_inference_egress.py --body "$WORK/body.json" --verify "$WORK/newfull.json"
 
 python3 - "$WORK/cur.json" "$WORK/newfull.json" "$CUR" "$NEW" "$PRIMARY_MODEL" "$FALLBACK_MODEL" "$PROJECT_MODEL_BASE_URL" "$MODEL_PRIORITY" "$MODEL_DEPLOYMENTS_SNAPSHOT" "$MODEL_ALLOWLIST_MODE" "$MODEL_ALLOWED_DEPLOYMENTS" "$M365_WRITE_POLICY" "$M365_OUTBOUND_POLICY" <<'PY'
 import json, sys
@@ -277,12 +336,17 @@ print("  metadata   : " + ("same" if ma == mb else f"*** DIFFERS: {ma} -> {mb}")
 # These five v57-only keys belong to the abandoned human-owner OBO proof and are removed while the
 # request body is built above. Every other missing key remains a release-blocking configuration loss.
 expected_removed = {
+    "NOUS_API_KEY_FILE", "NOUS_API_KEY_SECRET_URI",
     "OwnerOboProofEnabled",
     "OwnerOboSaasClientId",
     "Connections__BotTokenServiceConnection__Settings__ClientId",
     "Connections__BotTokenServiceConnection__Settings__AuthorityEndpoint",
     "Connections__BotTokenServiceConnection__Settings__FederatedClientId",
 }
+sys.path.insert(0, "scripts")
+from inference_settings import apply, KEYS
+expected_inference = apply(dict(ea))
+expected_removed.update(k for k in KEYS if k not in expected_inference)
 all_missing = set(ea) - set(eb)
 removed = sorted(all_missing & expected_removed)
 missing = sorted(all_missing - expected_removed)
@@ -300,6 +364,9 @@ print()
 # exactly this way — 200, active, and useless — and would have taken the agent off Teams if it had
 # been routed to. Cheap to check, expensive to miss.
 problems = []
+for key in KEYS:
+    if eb.get(key) != expected_inference.get(key):
+        problems.append("inference setting was not applied: " + key)
 if missing:                                     problems.append(f"lost environment variables: {missing}")
 if not db.get("image"):                         problems.append("has NO IMAGE")
 if not db.get("container_protocol_versions"):   problems.append("has NO PROTOCOLS (Teams cannot reach it)")
@@ -351,6 +418,16 @@ python3 scripts/write-release-record.py \
   --image-digest "$DIGEST" \
   --previous-version "$CUR" \
   --new-version "$NEW"
+
+if [[ -n "${HERMES_VERSION_RESULT_FILE:-}" ]]; then
+  python3 - "$HERMES_VERSION_RESULT_FILE" "$CUR" "$NEW" "$IMAGE" <<'PYRESULT'
+import sys
+from pathlib import Path
+sys.path.insert(0, 'scripts')
+from reinstall_agent import save
+save(Path(sys.argv[1]), dict(previous=sys.argv[2], version=sys.argv[3], image=sys.argv[4], verified=True))
+PYRESULT
+fi
 
 cat <<EOF
 ==> version $NEW created and verified. NOTHING IS ROUTED TO IT YET.

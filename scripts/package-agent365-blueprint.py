@@ -44,8 +44,8 @@ def main() -> int:
         description="Package Hermes Agent on Foundry for manual Microsoft 365 admin upload."
     )
     parser.add_argument("--blueprint-id", required=True, help="Foundry-created blueprint client ID")
-    parser.add_argument("--color-icon", required=True, type=Path, help="192x192 PNG")
-    parser.add_argument("--outline-icon", required=True, type=Path, help="32x32 PNG")
+    parser.add_argument("--color-icon", default=TEMPLATES / "color.png", type=Path, help="192x192 PNG; defaults to bundled Nous girl icon")
+    parser.add_argument("--outline-icon", default=TEMPLATES / "outline.png", type=Path, help="32x32 PNG; defaults to bundled Nous girl outline")
     parser.add_argument("--version", default="1.0.0", help="Three-part package version")
     parser.add_argument("--display-name", default="Hermes Agent on Foundry")
     parser.add_argument("--output-dir", type=Path)
