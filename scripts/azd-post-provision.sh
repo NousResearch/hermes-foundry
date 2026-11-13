@@ -82,11 +82,7 @@ else
   lookup_status=$?
   if [[ "$lookup_status" -eq 4 ]]; then
     printf '\nBuilding the Hermes image in Azure Container Registry...\n'
-    az acr build \
-      --registry "$REG" \
-      --image "hermes-full-foundry:${TAG}" \
-      --file Dockerfile \
-      .
+    HERMES_BUILD_SKIP_LOCAL_CONFIG=true REG="$REG" ./build.sh "$TAG"
     printf '\nCreating the Hermes hosted agent bound to its explicit managed identity blueprint...\n'
     ./scripts/create-hosted-blueprint.sh
   else

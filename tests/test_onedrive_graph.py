@@ -544,7 +544,7 @@ class GraphOneDriveTests(unittest.TestCase):
 
     def test_drive_404_does_not_claim_provisioning_or_suggest_native_fallback(self):
         with mock.patch.object(self.m, "_token", return_value="graph-token"), \
-             mock.patch.object(self.m.urllib.request, "urlopen",
+             mock.patch.object(self.m, "_graph_open",
                                side_effect=_drive_404("https://graph.microsoft.com/v1.0/me/drive")):
             result = self.m._graph("GET", "me/drive")
 

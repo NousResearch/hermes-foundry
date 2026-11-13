@@ -18,7 +18,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # Optional, gitignored per-installation settings. Every tracked checkout remains tenant-neutral.
-[ ! -f .deployment.local ] || source ./.deployment.local
+if [ "${HERMES_BUILD_SKIP_LOCAL_CONFIG:-false}" != "true" ] && [ -f .deployment.local ]; then
+  source ./.deployment.local
+fi
 : "${REG:?Set REG to the Azure Container Registry name (or add it to .deployment.local)}"
 # Positional first, env second. `build.sh v18` silently produced a `v1` image when TAG was env-only,
 # and a mis-tagged image is genuinely dangerous here: the agent version pins a tag, so the wrong one
@@ -43,5 +45,8 @@ fi
 echo "==> building in ACR (tag $TAG)"
 # Dockerfile compiles the committed edge source in its own SDK stage and copies the committed
 # gateway and sidecar directly. The operator therefore needs neither Docker nor .NET locally.
-az acr build --registry "$REG" --image "hermes-full-foundry:$TAG" --file Dockerfile .
+BUILD_CONTEXT=$(mktemp -d)
+trap 'rm -rf "$BUILD_CONTEXT"' EXIT
+python3 scripts/stage-build-context.py "$BUILD_CONTEXT"
+az acr build --registry "$REG" --image "hermes-full-foundry:$TAG" --file Dockerfile "$BUILD_CONTEXT"
 echo "==> done: $REG.azurecr.io/hermes-full-foundry:$TAG"

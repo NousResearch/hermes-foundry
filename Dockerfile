@@ -105,6 +105,7 @@ COPY src/gateway/app.py /opt/gateway/app.py
 COPY src/gateway/state_sync.py /opt/gateway/state_sync.py
 COPY src/gateway/access_policy.py /opt/gateway/access_policy.py
 COPY src/sidecar/agent365_mcp.py /opt/sidecar/agent365_mcp.py
+COPY src/sidecar/secure_http.py /opt/sidecar/secure_http.py
 COPY config/state-sync.defaults.json /opt/state-sync.defaults.json
 COPY start.sh    /opt/start.sh
 RUN chmod +x /opt/start.sh

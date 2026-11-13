@@ -172,6 +172,9 @@ class PostProvisionExistingAgentTests(unittest.TestCase):
                     path.write_text(pathlib.Path(os.environ['FIXTURE']).read_text())
                 sys.exit(code)
             """))
+            build = temp / "build.sh"
+            build.write_text('#!/usr/bin/env bash\naz acr build --registry "$REG" --image "hermes-full-foundry:$1"\n')
+            build.chmod(0o700)
             fake_az = binaries / "az"
             fake_az.write_text(textwrap.dedent("""\
                 #!/usr/bin/env bash

@@ -29,11 +29,21 @@ import inspect
 import ipaddress
 import os
 import socket
+import sys
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+# Direct-file test loaders do not add the module directory to sys.path.
+_SIDECAR_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SIDECAR_DIR not in sys.path:
+    sys.path.insert(0, _SIDECAR_DIR)
+from secure_http import graph_open as _graph_open, graph_download as _graph_download
+from secure_http import public_open as _public_open
+from secure_http import public_https_url as _public_https_url
+from secure_http import PublicRedirectHandler as _PublicHttpsRedirectHandler
 
 from mcp.server.fastmcp import FastMCP
 
@@ -745,44 +755,6 @@ def _graph_url(path: str) -> str:
     return f"{GRAPH}/{value.lstrip('/')}"
 
 
-def _public_https_url(url: str) -> str:
-    """Validate one outbound web target, resolving DNS before any request is sent."""
-    value = (url or "").strip()
-    if not value or any(ord(char) < 32 for char in value) or "\\" in value:
-        raise ValueError("URL is empty or contains invalid characters")
-    parsed = urllib.parse.urlsplit(value)
-    if (parsed.scheme.lower() != "https" or not parsed.hostname
-            or parsed.username is not None or parsed.password is not None
-            or parsed.port not in (None, 443)):
-        raise ValueError("URL must be public HTTPS on the default port")
-
-    try:
-        addresses = {
-            item[4][0]
-            for item in socket.getaddrinfo(parsed.hostname, 443, type=socket.SOCK_STREAM)
-        }
-    except socket.gaierror as e:
-        raise ValueError("host could not be resolved") from e
-    if not addresses:
-        raise ValueError("host resolved to no addresses")
-    for address in addresses:
-        try:
-            ip = ipaddress.ip_address(address.split("%", 1)[0])
-        except ValueError as e:
-            raise ValueError("host resolved to an invalid address") from e
-        if not ip.is_global:
-            raise ValueError("host resolves to a private, local, or reserved address")
-    return value
-
-
-class _PublicHttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Reapply the network boundary after every redirect."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        _public_https_url(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
 def _retry_delay(headers, attempt: int, cap_seconds: float = 20) -> float:
     """Return Graph's requested delay, or bounded exponential backoff.
 
@@ -861,10 +833,24 @@ def _graph(method: str, path: str, body=None, raw_body: bool = False) -> str:
     for attempt in range(attempts):
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with _graph_open(req, timeout=60) as r:
                 raw = r.read().decode("utf-8", "replace")
                 return _hide_policy_items(raw) if raw else f"OK ({r.status})"
         except urllib.error.HTTPError as e:
+            if e.code in (301, 302, 303, 307, 308):
+                location = e.headers.get("Location", "")
+                e.close()
+                if method != "GET" or not urllib.parse.urlsplit(url).path.endswith("/content"):
+                    return "ERROR: unexpected Graph redirect refused."
+                try:
+                    with _graph_download(location, timeout=60) as download:
+                        return download.read().decode("utf-8", "replace")
+                except urllib.error.HTTPError as error:
+                    code = error.code
+                    error.close()
+                    return f"ERROR: Graph download failed: HTTP {code}"
+                except Exception as error:
+                    return f"ERROR: Graph download refused: {type(error).__name__}"
             detail = _http_error_text(e, 600)
 
             if e.code in _GRAPH_RETRYABLE_STATUS:
@@ -924,16 +910,11 @@ def _graph_bytes(method: str, path: str):
     if not tok:
         return None, "ERROR: no agent credential present in this sandbox."
 
-    class _NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, req, fp, code, msg, headers, newurl):
-            return None                                   # surface it as an HTTPError instead
-
-    opener = urllib.request.build_opener(_NoRedirect)
     for attempt in range(3):
         try:
             req = urllib.request.Request(
                 url, headers={"Authorization": f"Bearer {tok}"}, method=method.upper())
-            with opener.open(req, timeout=120) as r:
+            with _graph_open(req, timeout=120) as r:
                 return r.read(), None
         except urllib.error.HTTPError as e:
             code = e.code
@@ -944,7 +925,7 @@ def _graph_bytes(method: str, path: str):
                 if not loc:
                     return None, "ERROR: Graph redirected without a Location header."
                 try:
-                    with urllib.request.urlopen(loc, timeout=120) as r2:   # deliberately unauthenticated
+                    with _graph_download(loc, timeout=120) as r2:   # deliberately unauthenticated
                         return r2.read(), None
                 except urllib.error.HTTPError as ex:
                     code = ex.code
@@ -993,7 +974,7 @@ def _graph_put_bytes(path: str, blob: bytes, if_match: str = "") -> str:
     for attempt in range(4):
         try:
             req = urllib.request.Request(url, data=blob, headers=headers, method="PUT")
-            with urllib.request.urlopen(req, timeout=120) as r:
+            with _graph_open(req, timeout=120) as r:
                 raw = r.read().decode("utf-8", "replace")
                 return raw or f"OK ({r.status})"
         except urllib.error.HTTPError as e:
@@ -2641,6 +2622,30 @@ def run_code(code: str) -> str:
     return out or "(the code ran and produced no output — remember to print() what you want back)"
 
 
+async def _public_browser_context(browser):
+    """Isolated browser state plus request checks; remote egress enforcement is mandatory."""
+    ctx = await browser.new_context(service_workers="block", accept_downloads=False)
+
+    async def check_route(route):
+        try:
+            await asyncio.to_thread(_public_https_url, route.request.url)
+        except (ValueError, OSError):
+            await route.abort("blockedbyclient")
+            return
+        await route.continue_()
+
+    async def block_websocket(ws):
+        await ws.close()
+
+    try:
+        await ctx.route("**/*", check_route)
+        await ctx.route_web_socket("**/*", block_websocket)
+        return ctx
+    except Exception:
+        await ctx.close()
+        raise
+
+
 @mcp.tool()
 async def browse_url(url: str, max_chars: int = 20000) -> str:
     """Open a page in a REAL browser (Playwright) and return its rendered text.
@@ -2668,6 +2673,9 @@ async def browse_url(url: str, max_chars: int = 20000) -> str:
     Costs ~$0.01 per browser-minute, billed by the second, against fetch_url's zero. Prefer
     fetch_url; reach for this when a page comes back empty or blocked.
     """
+    if os.environ.get("BROWSER_PUBLIC_EGRESS_ENFORCED", "").lower() != "true":
+        return ("ERROR: hosted browser disabled until its network enforces public-only egress. "
+                "Use fetch_url for public text pages; ask the administrator to configure browser egress.")
     try:
         url = _public_https_url(url)
     except ValueError as e:
@@ -2713,8 +2721,9 @@ async def browse_url(url: str, max_chars: int = 20000) -> str:
     try:
         async with async_playwright() as pw:
             browser = await pw.chromium.connect_over_cdp(cdp, timeout=120000)
+            ctx = None
             try:
-                ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+                ctx = await _public_browser_context(browser)
                 page = await ctx.new_page()
                 await page.goto(url, wait_until="domcontentloaded", timeout=90000)
                 try:
@@ -2724,7 +2733,11 @@ async def browse_url(url: str, max_chars: int = 20000) -> str:
                 title = await page.title()
                 text = await page.evaluate("() => document.body ? document.body.innerText : ''") or ""
             finally:
-                await browser.close()                         # end the session; it bills per second
+                try:
+                    if ctx is not None:
+                        await ctx.close()
+                finally:
+                    await browser.close()
     except Exception as e:                                    # noqa: BLE001 - surfaced to the model
         return f"ERROR browsing {url}: {type(e).__name__}: {str(e)[:300]}"
 
@@ -2886,6 +2899,9 @@ async def screenshot_url(url: str, full_page: bool = False,
     Same hosted browser as browse_url (Azure Playwright Workspaces over CDP), so it costs about the
     same and the same setup applies.
     """
+    if os.environ.get("BROWSER_PUBLIC_EGRESS_ENFORCED", "").lower() != "true":
+        return ("ERROR: hosted browser disabled until its network enforces public-only egress. "
+                "Use fetch_url for public text pages; ask the administrator to configure browser egress.")
     try:
         url = _public_https_url(url)
     except ValueError as e:
@@ -2916,8 +2932,9 @@ async def screenshot_url(url: str, full_page: bool = False,
     try:
         async with async_playwright() as pw:
             browser = await pw.chromium.connect_over_cdp(cdp, timeout=120000)
+            ctx = None
             try:
-                ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+                ctx = await _public_browser_context(browser)
                 page = await ctx.new_page()
                 await page.set_viewport_size({"width": 1280, "height": 720})
                 await page.goto(url, wait_until="domcontentloaded", timeout=90000)
@@ -2928,7 +2945,11 @@ async def screenshot_url(url: str, full_page: bool = False,
                 title = await page.title()
                 shot = await page.screenshot(full_page=bool(full_page), type="png")
             finally:
-                await browser.close()                         # end the session; it bills per second
+                try:
+                    if ctx is not None:
+                        await ctx.close()
+                finally:
+                    await browser.close()
     except Exception as e:                                    # noqa: BLE001 - surfaced to the model
         return f"ERROR screenshotting {url}: {type(e).__name__}: {str(e)[:300]}"
 
@@ -3011,8 +3032,7 @@ def fetch_url(url: str, max_chars: int = 20000) -> str:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
         })
-        opener = urllib.request.build_opener(_PublicHttpsRedirectHandler)
-        with opener.open(req, timeout=45) as r:
+        with _public_open(req, timeout=45) as r:
             ctype = (r.headers.get("Content-Type") or "").lower()
             raw = r.read(4 * 1024 * 1024)
     except urllib.error.HTTPError as e:
