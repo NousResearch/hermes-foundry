@@ -402,15 +402,17 @@ continues with [TENANT_ADMIN_INSTALLATION.md](TENANT_ADMIN_INSTALLATION.md).
 Use a ZIP only when the Foundry-native publication request cannot be used or the onboarding test is
 specifically intended to exercise manual package upload.
 
-Prepare a 192×192 color PNG and a 32×32 transparent white-outline PNG. Then run:
+Sample robot icons are included in `deployment/agent365/`: a 192×192 color PNG and a
+32×32 transparent white-outline PNG. Use these or supply your own icons with the same
+dimensions. Then run:
 
 ```bash
 python3 scripts/package-agent365-blueprint.py \
   --blueprint-id "$BLUEPRINT_ID" \
   --display-name "Hermes Agent on Foundry" \
   --version 1.0.0 \
-  --color-icon "/private/path/color.png" \
-  --outline-icon "/private/path/outline.png"
+  --color-icon "deployment/agent365/color.png" \
+  --outline-icon "deployment/agent365/outline.png"
 ```
 
 The upload file is:
